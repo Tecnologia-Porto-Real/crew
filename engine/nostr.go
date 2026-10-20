@@ -102,11 +102,11 @@ func (e *Event) tag(name string) string {
 // ---------- relay I/O ----------
 
 func dial(ctx context.Context, url string) (*websocket.Conn, error) {
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: map[string][]string{"User-Agent": {"crew-plugin"}}})
+	c, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	c.SetReadLimit(1 << 20)
+	c.SetReadLimit(256 << 10) // crew events are a few KB; never buffer huge frames from a relay
 	return c, nil
 }
 
@@ -179,6 +179,8 @@ func publish(ctx context.Context, relays []string, ev Event) []PubResult {
 
 type Filter map[string]any
 
+const maxQueryEvents = 1000
+
 // query asks every relay for stored events matching f, until EOSE or timeout, and merges by id.
 func query(ctx context.Context, relays []string, f Filter) []Event {
 	var mu sync.Mutex
@@ -198,7 +200,8 @@ func query(ctx context.Context, relays []string, f Filter) []Event {
 			if send(ctx, c, []any{"REQ", sub, f}) != nil {
 				return
 			}
-			for {
+			defer send(ctx, c, []any{"CLOSE", sub})
+			for n := 0; n < maxQueryEvents; n++ { // more than this from one relay is a flood
 				arr, err := recv(ctx, c)
 				if err != nil {
 					return
@@ -259,6 +262,9 @@ func subscribe(ctx context.Context, relays []string, f func() Filter, onEvent fu
 							if len(arr) >= 3 && json.Unmarshal(arr[2], &ev) == nil && ev.verify() {
 								mu.Lock()
 								dup := seen[ev.ID]
+								if len(seen) > 5000 { // bounded; the spool dedups again by id
+									seen = map[string]bool{}
+								}
 								seen[ev.ID] = true
 								mu.Unlock()
 								if !dup {

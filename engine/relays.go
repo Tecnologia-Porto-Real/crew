@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"os"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -39,13 +39,21 @@ var candidateRelays = append(append([]string{}, defaultRelays...),
 
 // roomRelays: rendezvous hashing — every teammate picks the same 3 relays without talking.
 // A team can pin its own list in .claude/crew.json: {"relays": ["wss://..."]}.
-func roomRelays(top, tag string) []string {
-	if b, err := os.ReadFile(filepath.Join(top, ".claude", "crew.json")); err == nil {
+func roomRelays(top, tag string) ([]string, bool) {
+	if b, err := readSmall(filepath.Join(top, ".claude", "crew.json"), 64<<10); err == nil {
 		var cfg struct {
 			Relays []string `json:"relays"`
 		}
-		if json.Unmarshal(b, &cfg) == nil && len(cfg.Relays) > 0 {
-			return cfg.Relays
+		if json.Unmarshal(b, &cfg) == nil {
+			var ok []string
+			for _, u := range cfg.Relays {
+				if validRelay(u) && len(ok) < 5 {
+					ok = append(ok, u)
+				}
+			}
+			if len(ok) > 0 {
+				return ok, true
+			}
 		}
 	}
 	type sc struct {
@@ -62,7 +70,23 @@ func roomRelays(top, tag string) []string {
 	for i := 0; i < 3 && i < len(l); i++ {
 		out = append(out, l[i].url)
 	}
-	return out
+	return out, false
+}
+
+// validRelay: TLS websockets only (plain ws:// just for a relay on this machine).
+func validRelay(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil || p.Host == "" || p.User != nil {
+		return false
+	}
+	switch p.Scheme {
+	case "wss":
+		return true
+	case "ws":
+		h := p.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	}
+	return false
 }
 
 // probe publishes one encrypted, expiring test event to each candidate relay and reads it back.
@@ -70,8 +94,9 @@ func cmdProbe() int {
 	seed := hk([]byte(randomHex(32)), "crew/v1", "probe", 32)
 	keys := keysFromSeed(seed)
 	rm := Room{K: hk(seed, "crew/v1", "k", 32), Tag: randomHex(16)}
-	content, _ := rm.seal([]byte(`{"v":1,"tipo":"probe"}`), kindMsg, keys.Pub)
-	ev := Event{CreatedAt: time.Now().Unix(), Kind: kindMsg, Content: content,
+	now := time.Now()
+	content, _ := rm.seal([]byte(`{"v":2,"type":"probe"}`), kindMsg, keys.Pub, now.Unix())
+	ev := Event{CreatedAt: now.Unix(), Kind: kindMsg, Content: content,
 		Tags: [][]string{{roomTagName, rm.Tag}, {"expiration", fmt.Sprint(time.Now().Add(10 * time.Minute).Unix())}}}
 	keys.sign(&ev)
 	for _, url := range candidateRelays {

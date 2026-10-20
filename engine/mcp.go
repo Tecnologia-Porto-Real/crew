@@ -54,12 +54,11 @@ var mcpTools = []map[string]any{
 	},
 	{
 		"name":        "crew_settings",
-		"description": "Only when the user asks: turn crew off/on in this repo, create a new room key (.claude/crew.key, to cut off people who lost access), or set the team passphrase that public repos need.",
+		"description": "Only when the user asks: turn crew off/on in this repo, or create a new room key (.claude/crew.key, to cut off people who lost access). Team passphrases are never set through Claude: the user runs the command shown by /crew:passphrase in their own terminal.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":     map[string]any{"type": "string", "enum": []string{"off", "on", "new_key", "passphrase"}},
-				"passphrase": map[string]any{"type": "string"},
+				"action": map[string]any{"type": "string", "enum": []string{"off", "on", "new_key"}},
 			},
 			"required": []string{"action"},
 		},
@@ -156,8 +155,6 @@ func callTool(name string, raw json.RawMessage) (string, bool) {
 			return setOff(cwd, false), false
 		case "new_key":
 			return newRoomKey(cwd), false
-		case "passphrase":
-			return setPassphrase(cwd, a.Passphrase), false
 		}
 		return "unknown action", true
 	}
@@ -306,6 +303,16 @@ func cli(cmd string, args []string) int {
 		fmt.Println(t)
 	case "off", "on":
 		fmt.Println(setOff(cwd, cmd == "off"))
+	case "passphrase":
+		// typed by the human in their own terminal, so it never passes through Claude or its transcript
+		fmt.Print("Team passphrase (12+ characters, agreed outside the repository; empty line removes it): ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			fmt.Println(clearPassphrase(cwd))
+			return 0
+		}
+		fmt.Println(setPassphrase(cwd, line))
 	case "whoami":
 		c, why := load(cwd, false)
 		if c == nil {

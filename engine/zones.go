@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"path"
 	"regexp"
 	"strings"
@@ -56,6 +57,9 @@ func globRe(g string) *regexp.Regexp {
 	}
 	b.WriteString("$")
 	re := regexp.MustCompile(b.String())
+	if len(reCache) > 2000 { // patterns come from teammates; keep the cache bounded
+		reCache = map[string]*regexp.Regexp{}
+	}
 	reCache[g] = re
 	return re
 }
@@ -84,8 +88,13 @@ func (c *Ctx) contractZone(file string) bool {
 	var cfg struct {
 		Contract []string `json:"contract"`
 	}
-	if readJSON(path.Join(norm(c.Repo.Top), ".claude", "crew.json"), &cfg) {
-		zones = append(append([]string{}, zones...), cfg.Contract...)
+	if b, err := readSmall(path.Join(norm(c.Repo.Top), ".claude", "crew.json"), 64<<10); err == nil && json.Unmarshal(b, &cfg) == nil {
+		zones = append([]string{}, zones...)
+		for i, z := range cfg.Contract {
+			if i < 50 && !tooBroad(z) {
+				zones = append(zones, z)
+			}
+		}
 	}
 	for _, z := range zones {
 		if match(file, z) {

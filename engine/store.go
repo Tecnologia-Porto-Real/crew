@@ -22,8 +22,13 @@ func dataRoot() string {
 	if d := os.Getenv("CREW_DATA"); d != "" {
 		return d
 	}
-	h, _ := os.UserHomeDir()
-	return filepath.Join(h, ".crew")
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return filepath.Join(h, ".crew")
+	}
+	if d, err := os.UserConfigDir(); err == nil && d != "" {
+		return filepath.Join(d, "crew")
+	}
+	return filepath.Join(os.TempDir(), "crew-"+strconv.Itoa(os.Getuid())) // never a relative path inside the repo
 }
 
 func repoDir(r *Repo) string {
@@ -194,11 +199,13 @@ func (c *Ctx) loadMe() Me {
 
 func (c *Ctx) updateMe(fn func(*Me)) Me {
 	var m Me
-	withLock(c.path("me.lock"), func() error {
+	if err := withLock(c.path("me.lock"), func() error {
 		m = c.loadMe()
 		fn(&m)
 		return writeJSON(c.path("me.json"), m)
-	})
+	}); err != nil {
+		return c.loadMe() // couldn't lock: keep what is on disk, never publish an empty state
+	}
 	return m
 }
 

@@ -11,16 +11,20 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Ctx struct {
-	Repo   *Repo
-	Room   Room
-	Keys   Keys
-	Dir    string
-	Name   string // display name
-	Me     string // Name#fp
-	Relays []string
+	Repo    *Repo
+	Room    Room
+	Keys    Keys            // this week's device key for this room
+	MyPubs  map[string]bool // my keys of this and last week (never ingest my own events)
+	Dir     string          // per-room state (a new room key starts clean)
+	RepoDir string          // per-repo settings (off, passphrase, visibility)
+	Name    string          // display name
+	Me      string          // Name#fp
+	Relays  []string
+	Pinned  bool // relays come from the repo's .claude/crew.json
 }
 
 const (
@@ -32,10 +36,10 @@ const (
 )
 
 func fp(pub string) string {
-	if len(pub) < 4 {
+	if len(pub) < 6 {
 		return pub
 	}
-	return pub[:4]
+	return pub[:6]
 }
 
 // killSwitch: org policy or user preference to never talk to relays.
@@ -53,8 +57,29 @@ func killSwitch() string {
 }
 
 type visCache struct {
-	Result string `json:"result"`
-	At     int64  `json:"at"`
+	Result      string `json:"result"`      // last probe: public | private | unknown
+	At          int64  `json:"at"`          // when it ran
+	EverPublic  bool   `json:"everPublic"`  // seen public once → treated as public for good
+	LastPrivate int64  `json:"lastPrivate"` // last time the server positively refused anonymous access
+}
+
+// visibilityGate decides whether the derived key is a secret. It fails closed: the room key of a public
+// repo is computable by anyone, and a repo that was ever public stays public for crew (its owner could
+// delete or privatize it to lure clones back on).
+func visibilityGate(r *Repo, vc visCache, hasPass bool) string {
+	if hasPass {
+		return ""
+	}
+	if vc.EverPublic || vc.Result == "public" {
+		return "public repository: anyone could read the team's messages, so crew stays off (a team passphrase turns it on: run /crew:passphrase)"
+	}
+	if time.Since(time.Unix(vc.LastPrivate, 0)) < 30*24*time.Hour {
+		return ""
+	}
+	if onPublicForge(r) {
+		return "could not confirm that this repository is private (offline, proxy or rate limit?) — crew will try again at the next session"
+	}
+	return "" // self-hosted forges often refuse anonymous checks entirely; those are private by nature
 }
 
 // load builds the context for the repo at cwd. probe=true refreshes the public/private check (network).
@@ -67,46 +92,59 @@ func load(cwd string, probe bool) (*Ctx, string) {
 	if r == nil {
 		return nil, why
 	}
-	dir := repoDir(r)
-	if _, err := os.Stat(filepath.Join(dir, "off")); err == nil {
+	rdir := repoDir(r)
+	if _, err := os.Stat(filepath.Join(rdir, "off")); err == nil {
 		return nil, "turned off in this repo (/crew:on to turn back on)"
 	}
 	var pass []byte
-	if b, err := os.ReadFile(filepath.Join(dir, "pass.key")); err == nil {
+	if b, err := os.ReadFile(filepath.Join(rdir, "pass.key")); err == nil {
 		pass, _ = hex.DecodeString(strings.TrimSpace(string(b)))
 	}
 	var vc visCache
-	readJSON(filepath.Join(dir, "visibility.json"), &vc)
-	if probe && time.Since(time.Unix(vc.At, 0)) > 24*time.Hour {
-		vc = visCache{Result: probeVisibility(r), At: time.Now().Unix()}
-		writeJSON(filepath.Join(dir, "visibility.json"), vc)
+	readJSON(filepath.Join(rdir, "visibility.json"), &vc)
+	if vc.At == 0 || probe && time.Since(time.Unix(vc.At, 0)) > time.Hour {
+		res := probeVisibility(r)
+		vc.Result, vc.At = res, time.Now().Unix()
+		if res == "public" {
+			vc.EverPublic = true
+		}
+		if res == "private" {
+			vc.LastPrivate = vc.At
+		}
+		writeJSON(filepath.Join(rdir, "visibility.json"), vc)
 	}
-	if vc.Result == "public" && len(pass) == 0 {
-		return nil, "public repository: anyone could read the team's messages, so crew stays off (a team passphrase turns it on: /crew:passphrase)"
+	if why := visibilityGate(r, vc, len(pass) == 32); why != "" {
+		return nil, why
 	}
 	room := deriveRoom(r, pass)
 	secret, err := deviceSecret(dataRoot())
 	if err != nil {
 		return nil, "cannot write plugin data: " + err.Error()
 	}
-	keys := keysFromSeed(hk(secret, "crew/v1", "nostr:"+room.Tag, 32))
+	// device keys rotate weekly too, so an observer can't follow one device across weeks
+	now := time.Now()
+	keys := keysFromSeed(hk(secret, proto, "nostr:"+room.Tag+":"+isoWeek(now), 32))
+	prev := keysFromSeed(hk(secret, proto, "nostr:"+room.Tag+":"+isoWeek(now.Add(-msgTTL)), 32))
 	name := displayName(r.Top)
-	return &Ctx{Repo: r, Room: room, Keys: keys, Dir: dir, Name: name, Me: name + "#" + fp(keys.Pub),
-		Relays: roomRelays(r.Top, room.Tag)}, ""
+	relays, pinned := roomRelays(r.Top, room.Tag)
+	return &Ctx{Repo: r, Room: room, Keys: keys, MyPubs: map[string]bool{keys.Pub: true, prev.Pub: true},
+		Dir: filepath.Join(rdir, "rooms", room.Tag[:16]), RepoDir: rdir, Name: name, Me: name + "#" + fp(keys.Pub),
+		Relays: relays, Pinned: pinned}, ""
 }
 
 // ---------- publish ----------
 
 func (c *Ctx) event(kind int, env Envelope, ttl time.Duration, extra ...[]string) (Event, error) {
-	env.V, env.Name, env.Ts = 1, c.Name, time.Now().Unix()
+	now := time.Now()
+	env.V, env.Name, env.Ts = 2, c.Name, now.Unix()
 	plain, _ := json.Marshal(env)
-	content, err := c.Room.seal(plain, kind, c.Keys.Pub)
+	content, err := c.Room.seal(plain, kind, c.Keys.Pub, now.Unix())
 	if err != nil {
 		return Event{}, err
 	}
-	tags := [][]string{{roomTagName, c.Room.Tag}, {"expiration", fmt.Sprint(time.Now().Add(ttl).Unix())}}
+	tags := [][]string{{roomTagName, c.Room.tagFor(now)}, {"expiration", fmt.Sprint(now.Add(ttl).Unix())}}
 	tags = append(tags, extra...)
-	ev := Event{CreatedAt: time.Now().Unix(), Kind: kind, Content: content, Tags: tags}
+	ev := Event{CreatedAt: now.Unix(), Kind: kind, Content: content, Tags: tags}
 	err = c.Keys.sign(&ev)
 	return ev, err
 }
@@ -148,7 +186,7 @@ func (c *Ctx) publishState(ctx context.Context, status string) error {
 		m.Touched = recentTouches(m.Touched, 8*time.Hour)
 	})
 	st := &State{Task: me.Task, Branch: c.branch(), Status: status, Touched: me.Touched, Reservations: me.Reservations}
-	ev, err := c.event(kindState, Envelope{Type: "state", State: st}, stateTTL, []string{"d", c.Room.Tag})
+	ev, err := c.event(kindState, Envelope{Type: "state", State: st}, stateTTL, []string{"d", c.Room.tagFor(time.Now())})
 	if err != nil {
 		return err
 	}
@@ -186,6 +224,17 @@ var reSecrets = []*regexp.Regexp{
 
 var reEnvLine = regexp.MustCompile(`(?m)^\s*(?:export\s+)?[A-Z][A-Z0-9_]{2,}\s*=\s*\S+`)
 
+func redact(t string) string {
+	for i, re := range reSecrets {
+		if i >= 7 {
+			t = re.ReplaceAllString(t, "${1}[redacted]")
+		} else {
+			t = re.ReplaceAllString(t, "[redacted]")
+		}
+	}
+	return t
+}
+
 func cleanOutgoing(t string) (string, error) {
 	t = strings.TrimSpace(t)
 	if t == "" {
@@ -194,13 +243,7 @@ func cleanOutgoing(t string) (string, error) {
 	if len(reEnvLine.FindAllString(t, -1)) >= 2 {
 		return "", fmt.Errorf("this looks like .env content; crew never sends environment variables")
 	}
-	for i, re := range reSecrets {
-		if i >= 7 {
-			t = re.ReplaceAllString(t, "${1}[redacted]")
-		} else {
-			t = re.ReplaceAllString(t, "[redacted]")
-		}
-	}
+	t = redact(t)
 	if r := []rune(t); len(r) > maxText {
 		return "", fmt.Errorf("message has %d characters; the limit is %d — keep it short and factual", len(r), maxText)
 	}
@@ -248,80 +291,205 @@ func (c *Ctx) rateLimit() error {
 // ---------- receive ----------
 
 func (c *Ctx) filter(since int64) Filter {
-	return Filter{"kinds": []int{kindMsg, kindState}, "#" + roomTagName: []string{c.Room.Tag}, "since": since, "limit": 500}
+	return Filter{"kinds": []int{kindMsg, kindState}, "#" + roomTagName: c.Room.liveTags(), "since": since, "limit": 500}
 }
 
 func (c *Ctx) fetch(ctx context.Context) []Item {
-	sp := c.loadSpool()
-	since := sp.Since - 120
-	if sp.Since == 0 {
-		since = time.Now().Add(-msgTTL).Unix()
+	// page backwards when a relay returns a full page, so junk flooding the public tag can't hide real events
+	var fresh []Item
+	since, until := c.since(), int64(0)
+	for page := 0; page < 4 && ctx.Err() == nil; page++ {
+		f := c.filter(since)
+		if until > 0 {
+			f["until"] = until
+		}
+		evs := query(ctx, c.Relays, f)
+		fresh = append(fresh, c.ingest(evs)...)
+		if len(evs) < 500 {
+			break
+		}
+		oldest := evs[0].CreatedAt
+		for _, e := range evs {
+			if e.CreatedAt < oldest {
+				oldest = e.CreatedAt
+			}
+		}
+		if oldest <= since {
+			break
+		}
+		until = oldest - 1
 	}
-	evs := query(ctx, c.Relays, c.filter(since))
 	c.updateMe(func(m *Me) { m.LastFetch = time.Now().Unix() })
-	return c.ingest(evs)
+	return fresh
+}
+
+// since: where to resume reading the room, never in the future and never older than the message TTL.
+func (c *Ctx) since() int64 {
+	s := c.loadSpool().Since
+	if now := time.Now().Unix(); s > now {
+		s = now
+	}
+	s -= 120
+	if floor := time.Now().Add(-msgTTL).Unix(); s < floor {
+		s = floor
+	}
+	return s
 }
 
 func cleanIncoming(s string, max int) string {
-	s = strings.NewReplacer("<", "‹", ">", "›", "\r", " ", "\n", " / ").Replace(s)
+	s = strings.NewReplacer("<", "‹", ">", "›", "\r\n", " / ", "\r", " / ", "\n", " / ").Replace(s)
+	// drop control, format (bidi overrides, zero-width) and line/paragraph separator characters
+	s = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return -1
+		}
+		return r
+	}, s)
 	if r := []rune(s); len(r) > max {
 		s = string(r[:max]) + "…"
 	}
 	return strings.TrimSpace(s)
 }
 
+// cleanPath: a file path or glob coming from a teammate, safe to show and to match.
+func cleanPath(p string) string {
+	p = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, p)
+	return cleanIncoming(norm(p), 200)
+}
+
+func cleanList(l []string, n int) []string {
+	out := []string{}
+	for _, p := range l {
+		if p = cleanPath(p); p != "" {
+			out = append(out, p)
+		}
+		if len(out) == n {
+			break
+		}
+	}
+	return out
+}
+
+// tooBroad: a reservation of "everything" would make every edit ask the user; ignore it.
+func tooBroad(p string) bool {
+	return strings.Trim(norm(p), "*/. ") == ""
+}
+
+// sanitizeState bounds and cleans everything in a teammate's state before it is stored or shown.
+func sanitizeState(s State) State {
+	out := State{Task: cleanIncoming(s.Task, 200), Branch: cleanIncoming(s.Branch, 60), Status: "active"}
+	if s.Status == "left" {
+		out.Status = "left"
+	}
+	for _, t := range s.Touched {
+		if p := cleanPath(t.Path); p != "" && len(out.Touched) < 40 {
+			out.Touched = append(out.Touched, Touch{Path: p, At: t.At})
+		}
+	}
+	maxUntil := time.Now().Add(stateTTL).Unix()
+	for _, r := range s.Reservations {
+		p := cleanPath(r.Path)
+		if p == "" || tooBroad(p) || len(out.Reservations) >= 30 {
+			continue
+		}
+		if r.Until > maxUntil {
+			r.Until = maxUntil
+		}
+		out.Reservations = append(out.Reservations, Reservation{Path: p, Exclusive: r.Exclusive, Until: r.Until,
+			Reason: cleanIncoming(r.Reason, 120), Auto: r.Auto})
+	}
+	return out
+}
+
+var msgTypes = map[string]bool{"notice": true, "question": true, "note": true, "done": true, "push": true}
+
+type decoded struct {
+	ev  Event
+	env Envelope
+}
+
 // ingest decrypts events for this room, updates peers and appends messages to the spool.
 // Returns the new items (wake-worthy ones flagged).
 func (c *Ctx) ingest(evs []Event) []Item {
-	if len(evs) == 0 {
+	// decrypt first, outside the lock: junk carrying our (public) room tag costs nothing beyond this
+	now := time.Now()
+	tags := c.Room.liveTags()
+	var good []decoded
+	for _, ev := range evs {
+		if !contains(tags, ev.tag(roomTagName)) || c.MyPubs[ev.PubKey] {
+			continue
+		}
+		if ev.CreatedAt > now.Add(10*time.Minute).Unix() || ev.CreatedAt < now.Add(-msgTTL-24*time.Hour).Unix() {
+			continue // far-future timestamps would stall everyone's "since" cursor
+		}
+		if exp := ev.tag("expiration"); exp != "" {
+			var e int64
+			fmt.Sscan(exp, &e)
+			if e > 0 && e < now.Unix() {
+				continue
+			}
+		}
+		if ev.Kind != kindMsg && ev.Kind != kindState {
+			continue
+		}
+		plain, err := c.Room.open(ev.Content, ev.Kind, ev.PubKey, ev.CreatedAt)
+		if err != nil {
+			continue // not ours / wrong key
+		}
+		var env Envelope
+		if json.Unmarshal(plain, &env) != nil {
+			continue
+		}
+		good = append(good, decoded{ev, env})
+	}
+	if len(good) == 0 {
 		return nil
 	}
-	sort.Slice(evs, func(i, j int) bool { return evs[i].CreatedAt < evs[j].CreatedAt })
+	sort.Slice(good, func(i, j int) bool { return good[i].ev.CreatedAt < good[j].ev.CreatedAt })
 	var fresh []Item
 	withLock(c.path("ingest.lock"), func() error {
 		peers := c.loadPeers()
 		sp := c.loadSpool()
-		mine := c.myFiles()
-		for _, ev := range evs {
-			if ev.tag(roomTagName) != c.Room.Tag || ev.PubKey == c.Keys.Pub {
-				continue
+		var mine []string
+		mineLoaded := false
+		myFilesOnce := func() []string {
+			if !mineLoaded {
+				mine, mineLoaded = c.myFiles(), true
 			}
-			if exp := ev.tag("expiration"); exp != "" {
-				var e int64
-				fmt.Sscan(exp, &e)
-				if e > 0 && e < time.Now().Unix() {
-					continue
-				}
-			}
-			plain, err := c.Room.open(ev.Content, ev.Kind, ev.PubKey)
-			if err != nil {
-				continue // not ours / wrong key
-			}
-			var env Envelope
-			if json.Unmarshal(plain, &env) != nil {
-				continue
-			}
-			if ev.CreatedAt > sp.Since {
+			return mine
+		}
+		for _, d := range good {
+			ev, env := d.ev, d.env
+			if ev.CreatedAt > sp.Since && ev.CreatedAt <= now.Unix() {
 				sp.Since = ev.CreatedAt
 			}
 			name := cleanIncoming(env.Name, 24)
 			from := name + "#" + fp(ev.PubKey)
-			if ev.Kind == kindState && env.State != nil {
+			if ev.Kind == kindState {
+				if env.State == nil {
+					continue
+				}
 				old, had := peers[ev.PubKey]
 				if had && old.At >= ev.CreatedAt {
 					continue
 				}
-				peers[ev.PubKey] = Peer{Pub: ev.PubKey, Name: name, At: ev.CreatedAt, State: *env.State}
+				st := sanitizeState(*env.State)
+				peers[ev.PubKey] = Peer{Pub: ev.PubKey, Name: name, At: ev.CreatedAt, State: st}
 				// a new exclusive reservation over a file I'm working on is worth an alert
-				for _, r := range liveReservations(env.State.Reservations) {
+				for _, r := range liveReservations(st.Reservations) {
 					if !r.Exclusive || hadReservation(old.State, r.Path) {
 						continue
 					}
-					if f := firstMatch(mine, r.Path); f != "" && !sp.IDs["r:"+ev.PubKey+r.Path] {
+					if f := firstMatch(myFilesOnce(), r.Path); f != "" && !sp.IDs["r:"+ev.PubKey+r.Path] {
 						sp.IDs["r:"+ev.PubKey+r.Path] = true
 						sp.Seq++
 						it := Item{Seq: sp.Seq, ID: ev.ID, Type: "reservation", From: from,
-							Text:  fmt.Sprintf("%s reserved %s exclusively (you have %s in progress)%s", from, r.Path, f, reasonSuffix(r.Reason)),
+							Text:  fmt.Sprintf("%s reserved %s exclusively (you have %s in progress)%s", from, r.Path, cleanPath(f), reasonSuffix(r.Reason)),
 							Files: []string{r.Path}, At: ev.CreatedAt, Wake: true}
 						sp.Items = append(sp.Items, it)
 						fresh = append(fresh, it)
@@ -329,22 +497,45 @@ func (c *Ctx) ingest(evs []Event) []Item {
 				}
 				continue
 			}
-			if ev.Kind != kindMsg || sp.IDs[ev.ID] {
+			if sp.IDs[ev.ID] {
 				continue
 			}
 			sp.IDs[ev.ID] = true
+			typ := env.Type
+			if !msgTypes[typ] {
+				typ = "note" // never let a teammate pick a label that hides who sent it
+			}
 			sp.Seq++
-			it := Item{Seq: sp.Seq, ID: ev.ID, Type: env.Type, From: from, To: env.To,
-				Text: cleanIncoming(env.Text, maxText), Files: env.Files, At: ev.CreatedAt}
-			it.Wake = c.worthWaking(it, mine)
+			it := Item{Seq: sp.Seq, ID: ev.ID, Type: typ, From: from, To: cleanIncoming(env.To, 40),
+				Text: cleanIncoming(env.Text, maxText), Files: cleanList(env.Files, 40), At: ev.CreatedAt}
+			it.Wake = c.worthWaking(it, myFilesOnce())
 			sp.Items = append(sp.Items, it)
 			fresh = append(fresh, it)
 		}
-		writeJSON(c.path("peers.json"), peers)
+		writeJSON(c.path("peers.json"), prunePeers(peers))
 		c.saveSpool(sp)
 		return nil
 	})
 	return fresh
+}
+
+// prunePeers drops expired states and keeps the 50 most recent devices.
+func prunePeers(m map[string]Peer) map[string]Peer {
+	var l []Peer
+	for _, p := range m {
+		if time.Since(time.Unix(p.At, 0)) < stateTTL {
+			l = append(l, p)
+		}
+	}
+	sort.Slice(l, func(i, j int) bool { return l[i].At > l[j].At })
+	out := map[string]Peer{}
+	for i, p := range l {
+		if i == 50 {
+			break
+		}
+		out[p.Pub] = p
+	}
+	return out
 }
 
 func reasonSuffix(r string) string {
@@ -572,4 +763,13 @@ func (c *Ctx) board(max int) string {
 		s = s[:max] + "…\n"
 	}
 	return s
+}
+
+func contains(l []string, s string) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

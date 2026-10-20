@@ -66,11 +66,12 @@ Just talk normally; Claude has the crew tools.
 | `/crew:board` | Shows the team board: who is active, tasks, reserved files, recent messages |
 | `/crew:off` | Turns crew off for this repository on this computer |
 | `/crew:on` | Turns it back on |
-| `/crew:passphrase` | Sets a team passphrase so crew works in a **public** repository (off by default there) |
+| `/crew:passphrase` | Shows the terminal command to set a team passphrase, so crew works in a **public** repository (off by default there). The passphrase is typed in your terminal, never in the chat |
 | `/crew:new-key` | Creates `.claude/crew.key` (commit it) so people who lost access to the repo stop seeing new messages |
 
-Your name comes from `git config user.name` (first word) plus 4 characters of your device key, e.g. `Ana#7f3c`.
-To change it: `git config user.name "Ana"`.
+Your name comes from `git config user.name` (first word) plus 6 characters of your device key, e.g. `Ana#7f3c1a`.
+The code changes every week (device keys rotate so nobody can follow a device over time). To change the name:
+`git config user.name "Ana"`.
 
 ## Update and uninstall
 
@@ -97,7 +98,8 @@ claude plugin uninstall crew@crew
 | Symptom | Likely cause and fix |
 |---|---|
 | "No teammates yet" but a teammate installed it | Both must use the same repository (`owner/repo` of the remote). A fork is a different room. A shallow clone is off — run `git fetch --unshallow`. Teammates who renamed the repo remote: `git remote set-url origin <new url>`. |
-| "off here — public repository" | Expected: in public repos anyone could read the room. Use `/crew:passphrase` with a passphrase agreed outside the repo. |
+| "off here — public repository" | Expected: in public repos anyone could read the room. A repo that was ever public stays treated as public. Use `/crew:passphrase` with a passphrase agreed outside the repo. |
+| "could not confirm that this repository is private" | On GitHub/GitLab/Bitbucket/Codeberg/Azure, crew stays off until a check confirms the repo is private (it fails closed). Usually a proxy or being offline; it retries at the next session. |
 | "Could not reach the relays" | No internet, or a firewall blocks WebSockets to public relays. Pin a relay that works for you in `.claude/crew.json` (below). |
 | Nothing at all | Make sure you opened a **new** session after installing, inside a git repository with a remote, and that `CREW_OFF`, `CI` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` are not set. |
 
@@ -118,11 +120,23 @@ claude plugin uninstall crew@crew
 - **Who can read the team's messages:** anyone who can read the repository, now or in the past (the key comes from
   its history) — the same people who can already read your code. To cut off people who lost access, run
   `/crew:new-key` and commit `.claude/crew.key`.
-- **Public repositories are off by default.** **Shallow clones, repos without a remote, and CI are off.**
+- **Public repositories are off by default**, and the check fails closed: on public forges crew only turns on after
+  the server confirms the repository is private, and a repository that was ever public stays off (unless a team
+  passphrase is set). **Shallow clones, repos without a remote, and CI are off.**
+- **Private forks or mirrors of a public project** share its first commit, so their key rests only on the
+  `owner/repo` name, which can be guessed. In that case run `/crew:new-key` once and commit `.claude/crew.key`.
+- **No forward secrecy:** anyone who later gets read access to the repo can decrypt messages that relays still
+  keep (they are asked to delete them after 7 days, but that is up to each relay).
 - Messages are limited to 500 characters, common secret formats are redacted, `.env` content is refused, and
   incoming text is shown to Claude as information from a teammate — never as instructions.
 - Relay operators can see metadata (IP, time, approximate size, how many devices talk in a room). If your company
   forbids that, set `CREW_OFF=1` (or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), or pin your own relay.
+  The public room tag and device keys rotate weekly, but crew traffic (event kinds 4848/34848) is recognizable as crew.
+- **Teammates can't make Claude act for them:** their text is cleaned (no tags, line breaks, control or invisible
+  characters), capped, labeled as coming from a teammate, and never triggers actions; exclusive reservations only
+  make Claude Code ask *you*. A reservation of the whole repository is ignored.
+- **Verifiable binaries:** the engine binaries in `plugin/runtime/` are built reproducibly; CI rebuilds them from
+  source on every push and fails if they differ. Checksums are in `plugin/runtime/SHA256SUMS`.
 
 ## Team options (optional, committed to the repo)
 
@@ -132,7 +146,8 @@ claude plugin uninstall crew@crew
 { "relays": ["wss://your-relay"], "contract": ["api/schema/**", "shared/types.ts"] }
 ```
 
-`relays` replaces the public relays for this repository; `contract` adds your own contract files.
+`relays` replaces the public relays for this repository (`wss://` only, up to 5; crew tells everyone when a repo pins
+relays); `contract` adds your own contract files.
 
 ## Development
 

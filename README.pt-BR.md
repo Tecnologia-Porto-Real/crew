@@ -66,11 +66,12 @@ Quer ligar só em um repositório? Rode os dois comandos dentro dele com `--scop
 | `/crew:board` | Mostra o quadro do time: quem está ativo, tarefas, arquivos reservados, mensagens recentes |
 | `/crew:off` | Desliga o crew neste repositório, neste computador |
 | `/crew:on` | Liga de novo |
-| `/crew:passphrase` | Define uma senha do time para o crew funcionar num repositório **público** (lá ele vem desligado) |
+| `/crew:passphrase` | Mostra o comando de terminal para definir uma senha do time, para o crew funcionar num repositório **público** (lá ele vem desligado). A senha é digitada no seu terminal, nunca no chat |
 | `/crew:new-key` | Cria `.claude/crew.key` (faça commit) para quem perdeu acesso ao repo deixar de ver as mensagens novas |
 
-Seu nome vem do `git config user.name` (primeira palavra) mais 4 caracteres da chave do seu aparelho, ex.: `Ana#7f3c`.
-Para mudar: `git config user.name "Ana"`.
+Seu nome vem do `git config user.name` (primeira palavra) mais 6 caracteres da chave do seu aparelho, ex.: `Ana#7f3c1a`.
+O código muda toda semana (as chaves de aparelho giram para ninguém seguir um aparelho ao longo do tempo). Para mudar o
+nome: `git config user.name "Ana"`.
 
 ## Atualizar e desinstalar
 
@@ -97,7 +98,8 @@ claude plugin uninstall crew@crew
 | Sintoma | Causa provável e solução |
 |---|---|
 | "no teammates yet", mas o colega instalou | Os dois precisam usar o mesmo repositório (`dono/repo` do remoto). Fork é outra sala. Clone raso fica desligado — rode `git fetch --unshallow`. Se o repo foi renomeado: `git remote set-url origin <url nova>`. |
-| "off here — public repository" | Esperado: em repo público qualquer um leria a sala. Use `/crew:passphrase` com uma senha combinada fora do repo. |
+| "off here — public repository" | Esperado: em repo público qualquer um leria a sala. Um repo que já foi público continua tratado como público. Use `/crew:passphrase` com uma senha combinada fora do repo. |
+| "could not confirm that this repository is private" | No GitHub/GitLab/Bitbucket/Codeberg/Azure, o crew só liga depois que uma checagem confirma que o repo é privado (falha "fechado"). Normalmente é proxy ou falta de internet; ele tenta de novo na próxima sessão. |
 | "Could not reach the relays" | Sem internet, ou um firewall bloqueia WebSocket para relays públicos. Fixe um relay que funcione em `.claude/crew.json` (abaixo). |
 | Não aparece nada | Confira se abriu uma sessão **nova** depois de instalar, dentro de um repositório git com remoto, e se `CREW_OFF`, `CI` ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` não estão definidos. |
 
@@ -118,11 +120,25 @@ claude plugin uninstall crew@crew
 - **Quem lê as mensagens do time:** quem pode ler o repositório, hoje ou no passado (a chave vem do histórico) — as
   mesmas pessoas que já leem seu código. Para cortar quem perdeu acesso, rode `/crew:new-key` e faça commit de
   `.claude/crew.key`.
-- **Repositórios públicos vêm desligados.** **Clones rasos, repos sem remoto e CI também.**
+- **Repositórios públicos vêm desligados**, e a checagem falha "fechado": nos serviços públicos (GitHub etc.) o crew
+  só liga depois que o servidor confirma que o repositório é privado, e um repositório que já foi público continua
+  desligado (a não ser com senha do time). **Clones rasos, repos sem remoto e CI também ficam desligados.**
+- **Forks ou espelhos privados de um projeto público** herdam o primeiro commit dele, então a chave depende só do nome
+  `dono/repo`, que dá para adivinhar. Nesse caso rode `/crew:new-key` uma vez e faça commit de `.claude/crew.key`.
+- **Sem sigilo futuro:** quem ganhar acesso de leitura ao repo depois consegue decifrar mensagens que os relays ainda
+  guardem (eles são instruídos a apagar em 7 dias, mas isso depende de cada relay).
 - Mensagens têm até 500 caracteres, formatos comuns de segredo são removidos, conteúdo de `.env` é recusado e o texto
   que chega é mostrado ao Claude como informação de um colega — nunca como instrução.
 - Os operadores dos relays veem metadados (IP, horário, tamanho aproximado, quantos aparelhos falam numa sala). Se sua
   empresa proíbe isso, defina `CREW_OFF=1` (ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) ou fixe um relay próprio.
+  A etiqueta pública da sala e as chaves de aparelho mudam toda semana, mas o tráfego (eventos 4848/34848) é
+  reconhecível como sendo do crew.
+- **Colegas não conseguem fazer o Claude agir por eles:** o texto deles é limpo (sem tags, quebras de linha, caracteres
+  de controle ou invisíveis), limitado, identificado como vindo de um colega e nunca dispara ações; reservas
+  exclusivas só fazem o Claude Code perguntar a *você*. Uma reserva do repositório inteiro é ignorada.
+- **Executáveis verificáveis:** os executáveis em `plugin/runtime/` são compilados de forma reprodutível; a CI os
+  recompila a partir do código a cada push e falha se forem diferentes. As impressões digitais estão em
+  `plugin/runtime/SHA256SUMS`.
 
 ## Opções do time (opcional, commitado no repo)
 
@@ -132,7 +148,8 @@ claude plugin uninstall crew@crew
 { "relays": ["wss://seu-relay"], "contract": ["api/schema/**", "shared/types.ts"] }
 ```
 
-`relays` substitui os relays públicos neste repositório; `contract` acrescenta seus próprios arquivos de contrato.
+`relays` substitui os relays públicos neste repositório (só `wss://`, até 5; o crew avisa todo mundo quando um repo
+fixa relays); `contract` acrescenta seus próprios arquivos de contrato.
 
 ## Licença
 

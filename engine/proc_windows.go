@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"os/exec"
 	"syscall"
 )
@@ -24,10 +23,4 @@ func pidAlive(pid int) bool {
 		return false
 	}
 	return code == 259 // STILL_ACTIVE
-}
-
-func killPid(pid int) {
-	if p, err := os.FindProcess(pid); err == nil {
-		p.Kill()
-	}
 }

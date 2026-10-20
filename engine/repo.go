@@ -31,7 +31,8 @@ var errOff = errors.New("off")
 func git(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// a repository's own config must not make our background git calls run its commands
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}, args...)...)
 	cmd.Dir = dir
 	hideWindow(cmd)
 	out, err := cmd.Output()
@@ -48,11 +49,16 @@ func openRepo(dir string) (*Repo, string) {
 		return nil, "shallow clone (run `git fetch --unshallow` to join your team's room)"
 	}
 	common, _ := git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	roots, err := git(top, "rev-list", "--max-parents=0", "HEAD")
-	if err != nil || roots == "" {
-		return nil, "repository has no commits yet"
+	root := cachedRoot(common)
+	if root == "" {
+		// walking the whole history is slow on big repos, so the answer is cached per clone for a day
+		roots, err := git(top, "rev-list", "--max-parents=0", "HEAD")
+		if err != nil || roots == "" {
+			return nil, "repository has no commits yet"
+		}
+		root = oldestRoot(top, strings.Fields(roots))
+		saveRoot(common, root)
 	}
-	root := oldestRoot(top, strings.Fields(roots))
 
 	remote := pickRemote(top)
 	if remote == "" {
@@ -64,6 +70,40 @@ func openRepo(dir string) (*Repo, string) {
 		return nil, "could not read the remote URL"
 	}
 	return &Repo{Top: filepath.Clean(top), CommonDir: common, Root: root, Path: path, Host: host, Remote: remote}, ""
+}
+
+type rootEntry struct {
+	Root string `json:"root"`
+	At   int64  `json:"at"`
+}
+
+func cachedRoot(common string) string {
+	if common == "" {
+		return ""
+	}
+	m := map[string]rootEntry{}
+	readJSON(filepath.Join(dataRoot(), "roots.json"), &m)
+	if e, ok := m[common]; ok && time.Since(time.Unix(e.At, 0)) < 24*time.Hour && len(e.Root) >= 40 {
+		return e.Root
+	}
+	return ""
+}
+
+func saveRoot(common, root string) {
+	if common == "" {
+		return
+	}
+	withLock(filepath.Join(dataRoot(), "roots.lock"), func() error {
+		m := map[string]rootEntry{}
+		readJSON(filepath.Join(dataRoot(), "roots.json"), &m)
+		for k, e := range m {
+			if time.Since(time.Unix(e.At, 0)) > 7*24*time.Hour {
+				delete(m, k)
+			}
+		}
+		m[common] = rootEntry{Root: root, At: time.Now().Unix()}
+		return writeJSON(filepath.Join(dataRoot(), "roots.json"), m)
+	})
 }
 
 func oldestRoot(top string, roots []string) string {
@@ -165,16 +205,71 @@ func myEmail(top string) string {
 	return e
 }
 
-// visibility probe: anonymous ls-remote, never prompting or using stored credentials.
-// Returns "public", "private" (or nonexistent / unreachable anonymously) or "unknown".
+// Well-known public forges: there, an inconclusive visibility check keeps crew off (fail closed).
+var publicForges = map[string]bool{"github.com": true, "gitlab.com": true, "bitbucket.org": true, "codeberg.org": true, "dev.azure.com": true}
+
+// canonicalHost maps SSH endpoints and ~/.ssh/config aliases to the forge's web host.
+func canonicalHost(h string) string {
+	switch h {
+	case "ssh.github.com":
+		return "github.com"
+	case "altssh.gitlab.com":
+		return "gitlab.com"
+	case "altssh.bitbucket.org":
+		return "bitbucket.org"
+	case "ssh.dev.azure.com", "vs-ssh.visualstudio.com":
+		return "dev.azure.com"
+	}
+	if publicForges[h] || strings.Contains(h, ".") && reHost.MatchString(h) && !strings.HasSuffix(h, ".local") {
+		return h
+	}
+	// an alias like "github-work": ask ssh what it really points to
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ssh", "-G", "--", h)
+	hideWindow(cmd)
+	if out, err := cmd.Output(); err == nil {
+		for _, l := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(l); len(f) == 2 && f[0] == "hostname" && reHost.MatchString(strings.ToLower(f[1])) {
+				return canonicalHost(strings.ToLower(f[1]))
+			}
+		}
+	}
+	return h
+}
+
+func onPublicForge(r *Repo) bool { return publicForges[canonicalHost(r.Host)] }
+
+// probeVisibility: anonymous ls-remote, never prompting or using stored credentials.
+// "public" = anyone can read it; "private" = the server positively refused anonymous access;
+// "unknown" = anything else (offline, proxy, TLS interception, 5xx, rate limits…).
 func probeVisibility(r *Repo) string {
 	if r.Host == "" {
 		return "unknown"
 	}
+	host, path := canonicalHost(r.Host), r.Path
+	if host == "dev.azure.com" { // v3/org/project/repo → org/project/_git/repo
+		p := strings.TrimPrefix(path, "v3/")
+		if parts := strings.Split(p, "/"); len(parts) == 3 {
+			path = parts[0] + "/" + parts[1] + "/_git/" + parts[2]
+		}
+	}
+	return probeHost(host, path)
+}
+
+var reHost = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
+
+func probeHost(host, path string) string {
+	if !reHost.MatchString(host) {
+		return "unknown"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	url := "https://" + r.Host + "/" + r.Path + ".git"
-	cmd := exec.CommandContext(ctx, "git", "-c", "credential.helper=", "-c", "core.askPass=", "ls-remote", "--heads", url)
+	url := "https://" + host + "/" + path
+	if !strings.Contains(path, "/_git/") {
+		url += ".git"
+	}
+	cmd := exec.CommandContext(ctx, "git", "-c", "credential.helper=", "-c", "core.askPass=", "ls-remote", "--heads", "--", url)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_ASKPASS=", "SSH_ASKPASS=")
 	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
@@ -182,8 +277,14 @@ func probeVisibility(r *Repo) string {
 		return "public"
 	}
 	s := strings.ToLower(string(out))
-	if ctx.Err() != nil || strings.Contains(s, "could not resolve host") || strings.Contains(s, "unable to access") && strings.Contains(s, "timed out") {
+	if ctx.Err() != nil {
 		return "unknown"
 	}
-	return "private"
+	for _, refused := range []string{"terminal prompts disabled", "could not read username", "authentication failed",
+		"repository not found", "requested url returned error: 401", "requested url returned error: 403", "requested url returned error: 404"} {
+		if strings.Contains(s, refused) {
+			return "private"
+		}
+	}
+	return "unknown"
 }

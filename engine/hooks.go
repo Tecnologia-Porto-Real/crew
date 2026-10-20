@@ -150,7 +150,7 @@ func hookSessionStart(in HookIn) {
 func (c *Ctx) humanLine() string {
 	peers := c.activePeers()
 	if len(peers) == 0 {
-		return fmt.Sprintf("crew: you are %s in the %s room — no teammates yet; they appear when they use crew in this repo. /crew:off turns it off here.", c.Me, c.Repo.Path)
+		return fmt.Sprintf("crew: you are %s in the %s room — no teammates yet; they appear when they use crew in this repo. %s /crew:off turns it off here.", c.Me, c.Repo.Path, c.relayNote())
 	}
 	var who []string
 	for i, p := range peers {
@@ -164,7 +164,18 @@ func (c *Ctx) humanLine() string {
 		}
 		who = append(who, fmt.Sprintf("%s#%s (%s)", p.Name, fp(p.Pub), st))
 	}
-	return fmt.Sprintf("crew: %s room — %s. Encrypted via public Nostr relays (they see IP and timing). /crew:off turns it off here.", c.Repo.Path, strings.Join(who, ", "))
+	return fmt.Sprintf("crew: %s room — %s. %s /crew:off turns it off here.", c.Repo.Path, strings.Join(who, ", "), c.relayNote())
+}
+
+func (c *Ctx) relayNote() string {
+	if !c.Pinned {
+		return "Encrypted via public Nostr relays (they see IP and timing)."
+	}
+	var hosts []string
+	for _, u := range c.Relays {
+		hosts = append(hosts, strings.TrimPrefix(strings.TrimPrefix(u, "wss://"), "ws://"))
+	}
+	return "Encrypted via relays pinned in this repo's .claude/crew.json (" + strings.Join(hosts, ", ") + "), which see IP and timing."
 }
 
 // ---------- UserPromptSubmit (local only) ----------
@@ -463,10 +474,9 @@ func hookPostPush(in HookIn) {
 	if len(contract) > 0 {
 		text += ". Contract files changed: " + strings.Join(trimList(contract, 8), ", ") + " — pull before building on them"
 	}
-	if t, err := cleanOutgoing(text); err == nil {
-		text = t
-	} else {
-		text = string([]rune(text)[:maxText-1])
+	text = redact(text)
+	if r := []rune(text); len(r) > maxText {
+		text = string(r[:maxText-1]) + "…"
 	}
 	ctx, cancel := withTimeout(10 * time.Second)
 	defer cancel()
@@ -497,14 +507,9 @@ func hookSessionEnd(in HookIn) {
 	if c == nil {
 		return
 	}
+	// the session's watcher notices the missing session file and exits within 30 s; we never kill by pid,
+	// because a recycled pid could belong to an unrelated program
 	os.Remove(sessionFile(c, in.SessionID))
-	if pidFile := c.watchPidFile(in.SessionID); true {
-		var w struct{ Pid int }
-		if readJSON(pidFile, &w) && w.Pid > 0 && w.Pid != os.Getpid() {
-			killPid(w.Pid)
-		}
-		os.Remove(pidFile)
-	}
 	ents, _ := os.ReadDir(c.path("sessions"))
 	for _, e := range ents {
 		if strings.HasSuffix(e.Name(), ".json") {
@@ -529,9 +534,12 @@ func hookWatch(in HookIn) int {
 	}
 	sid := in.SessionID
 	pidFile := c.watchPidFile(sid)
+	// another live watcher for this session refreshes its file every 30 s; a stale file with a recycled
+	// pid must not keep this session deaf
 	var w struct{ Pid int }
-	if readJSON(pidFile, &w) && w.Pid != os.Getpid() && pidAlive(w.Pid) {
-		return 0 // this session already has a watcher
+	if st, err := os.Stat(pidFile); err == nil && time.Since(st.ModTime()) < 90*time.Second &&
+		readJSON(pidFile, &w) && w.Pid != os.Getpid() && pidAlive(w.Pid) {
+		return 0
 	}
 	writeJSON(pidFile, map[string]int{"Pid": os.Getpid()})
 	defer func() {
@@ -555,13 +563,7 @@ func hookWatch(in HookIn) int {
 	}()
 
 	signal := make(chan struct{}, 1)
-	go subscribe(ctx, c.Relays, func() Filter {
-		since := c.loadSpool().Since - 60
-		if since < time.Now().Add(-msgTTL).Unix() {
-			since = time.Now().Add(-msgTTL).Unix()
-		}
-		return c.filter(since)
-	}, func(ev Event) {
+	go subscribe(ctx, c.Relays, func() Filter { return c.filter(c.since()) }, func(ev Event) {
 		c.ingest([]Event{ev})
 		if hasWake(c.pending(sid, false)) {
 			select {
@@ -587,6 +589,8 @@ func hookWatch(in HookIn) int {
 			if sid != "" && !c.sessionOpen(sid) {
 				return 0
 			}
+			now := time.Now()
+			os.Chtimes(pidFile, now, now)
 			if time.Since(lastBeat) > 10*time.Minute {
 				lastBeat = time.Now()
 				pctx, pc := withTimeout(15 * time.Second)
@@ -666,14 +670,38 @@ func setPassphrase(cwd, pass string) string {
 	return "Team passphrase saved on this machine for " + r.Path + ". Every teammate must set the same passphrase."
 }
 
+func clearPassphrase(cwd string) string {
+	r, why := openRepo(cwd)
+	if r == nil {
+		return "crew can't run here: " + why
+	}
+	os.Remove(filepath.Join(repoDir(r), "pass.key"))
+	return "Team passphrase removed for " + r.Path + "."
+}
+
 func newRoomKey(cwd string) string {
 	r, why := openRepo(cwd)
 	if r == nil {
 		return "crew can't run here: " + why
 	}
-	p := filepath.Join(r.Top, ".claude", "crew.key")
-	os.MkdirAll(filepath.Dir(p), 0o755)
-	if err := os.WriteFile(p, []byte(randomHex(32)+"\n"), 0o644); err != nil {
+	dir := filepath.Join(r.Top, ".claude")
+	p := filepath.Join(dir, "crew.key")
+	// never follow symlinks a repository may plant to make us overwrite another file
+	for _, x := range []string{dir, p} {
+		if st, err := os.Lstat(x); err == nil && st.Mode()&os.ModeSymlink != 0 {
+			return "refusing to write: " + x + " is a symbolic link"
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "could not create .claude: " + err.Error()
+	}
+	tmp := filepath.Join(dir, ".crew.key."+randomHex(4)+".tmp")
+	if err := os.WriteFile(tmp, []byte(randomHex(32)+"\n"), 0o644); err != nil {
+		return "could not write .claude/crew.key: " + err.Error()
+	}
+	os.Remove(p)
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
 		return "could not write .claude/crew.key: " + err.Error()
 	}
 	return "Created .claude/crew.key. Commit and push it: teammates join the new room after they pull, and people without access to the repo lose access to new messages."
