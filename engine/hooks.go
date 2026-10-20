@@ -14,6 +14,32 @@ import (
 	"time"
 )
 
+// agent: which coding agent runs the hook ("claude" or "codex"). Codex has no "ask" decision for PreToolUse
+// and no way to wake an idle session, so a few behaviors differ.
+var agent = "claude"
+
+// rememberActiveRepo lets the MCP server (which Codex starts outside the project) find the repo in use.
+func rememberActiveRepo(cwd string) {
+	if cwd == "" {
+		return
+	}
+	writeJSON(filepath.Join(dataRoot(), "active.json"), map[string]any{"cwd": cwd, "at": time.Now().Unix()})
+}
+
+// filesInPatch lists the files touched by a Codex apply_patch payload.
+func filesInPatch(patch string) []string {
+	var out []string
+	for _, l := range strings.Split(patch, "\n") {
+		l = strings.TrimSpace(l)
+		for _, p := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: ", "*** Move to: "} {
+			if strings.HasPrefix(l, p) {
+				out = append(out, strings.TrimSpace(strings.TrimPrefix(l, p)))
+			}
+		}
+	}
+	return out
+}
+
 type HookIn struct {
 	SessionID string `json:"session_id"`
 	Cwd       string `json:"cwd"`
@@ -63,8 +89,14 @@ func dispatch(cmd string, args []string) int {
 		if len(args) == 0 {
 			return 0
 		}
+		for i, a := range args {
+			if a == "--agent" && i+1 < len(args) {
+				agent = args[i+1]
+			}
+		}
 		defer func() { recover() }()
 		in := readHookInput()
+		rememberActiveRepo(in.Cwd)
 		switch args[0] {
 		case "session-start":
 			hookSessionStart(in)
@@ -150,7 +182,7 @@ func hookSessionStart(in HookIn) {
 func (c *Ctx) humanLine() string {
 	peers := c.activePeers()
 	if len(peers) == 0 {
-		return fmt.Sprintf("crew: you are %s in the %s room — no teammates yet; they appear when they use crew in this repo. %s /crew:off turns it off here.", c.Me, c.Repo.Path, c.relayNote())
+		return fmt.Sprintf("crew: you are %s in the %s room — no teammates yet; they appear when they use crew (Claude Code or Codex) in this repo. %s /crew:off turns it off here.", c.Me, c.Repo.Path, c.relayNote())
 	}
 	var who []string
 	for i, p := range peers {
@@ -224,21 +256,27 @@ func hookPreEdit(in HookIn) {
 	if c == nil {
 		return
 	}
-	file := in.ToolInput.FilePath
-	if file == "" {
-		file = in.ToolInput.NotebookPath
+	files := []string{in.ToolInput.FilePath, in.ToolInput.NotebookPath}
+	if in.ToolName == "apply_patch" || strings.Contains(in.ToolInput.Command, "*** Begin Patch") {
+		files = filesInPatch(in.ToolInput.Command) // Codex edits arrive as one patch touching several files
 	}
-	rel := relPath(c, in.Cwd, file)
 	var notes []string
 	var ask string
-	if rel != "" {
+	for _, file := range files {
+		if file == "" {
+			continue
+		}
+		rel := relPath(c, in.Cwd, file)
+		if rel == "" {
+			continue
+		}
 		for _, p := range c.activePeers() {
 			who := p.Name + "#" + fp(p.Pub)
 			for _, r := range liveReservations(p.State.Reservations) {
 				if !match(rel, r.Path) {
 					continue
 				}
-				if r.Exclusive && ask == "" {
+				if r.Exclusive && ask == "" && !c.overridden(rel) {
 					ask = fmt.Sprintf("crew: %s reserved %s exclusively until %s%s. Editing it in parallel may break their work — approve only if you agreed with them.",
 						who, cleanIncoming(r.Path, 120), time.Unix(r.Until, 0).Format("15:04"), reasonSuffix(r.Reason))
 				} else if !r.Exclusive && c.warnOnce(rel+"|"+p.Pub) {
@@ -279,9 +317,20 @@ func hookPreEdit(in HookIn) {
 	if d := deliver(c, in.SessionID); d != "" {
 		notes = append(notes, d)
 	}
+	emitPreToolUse(ask, notes)
+}
+
+// emitPreToolUse: Claude Code asks the human itself; Codex has no "ask" decision, so the edit is denied
+// with an explanation and Claude-less agents use crew_override once their human agrees.
+func emitPreToolUse(ask string, notes []string) {
 	out := map[string]any{"hookEventName": "PreToolUse"}
 	if ask != "" {
-		out["permissionDecision"] = "ask"
+		if agent == "codex" {
+			ask += " This edit was blocked: ask your human. If they agree, call the crew_override tool for that path (it tells the teammate) and retry."
+			out["permissionDecision"] = "deny"
+		} else {
+			out["permissionDecision"] = "ask"
+		}
 		out["permissionDecisionReason"] = ask
 		notes = append([]string{"[" + ask + "]"}, notes...)
 	}
@@ -291,6 +340,18 @@ func hookPreEdit(in HookIn) {
 	if len(out) > 1 {
 		emit(map[string]any{"hookSpecificOutput": out})
 	}
+}
+
+// overridden: the human explicitly agreed to edit this path despite a teammate's exclusive reservation.
+func (c *Ctx) overridden(rel string) bool {
+	m := map[string]int64{}
+	readJSON(c.path("overrides.json"), &m)
+	for p, until := range m {
+		if until > time.Now().Unix() && (p == rel || match(rel, p)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Ctx) warnOnce(key string) bool {
@@ -358,7 +419,7 @@ func hookPreBash(in HookIn) {
 					continue
 				}
 				for _, path := range paths {
-					if match(path, r.Path) || match(r.Path, path) {
+					if (match(path, r.Path) || match(r.Path, path)) && !c.overridden(path) && !c.overridden(r.Path) {
 						ask = fmt.Sprintf("crew: this command changes files under %s, which %s reserved exclusively until %s%s. Approve only if you agreed with them.",
 							cleanIncoming(r.Path, 120), who, time.Unix(r.Until, 0).Format("15:04"), reasonSuffix(r.Reason))
 						break outer
@@ -367,21 +428,13 @@ func hookPreBash(in HookIn) {
 			}
 		}
 	}
+	if rePush.MatchString(cmd) {
+		recordPrePush(c) // Codex has no `if` filter on hooks, so pushes are recognized here too
+	}
 	if d := deliver(c, in.SessionID); d != "" {
 		notes = append(notes, d)
 	}
-	out := map[string]any{"hookEventName": "PreToolUse"}
-	if ask != "" {
-		out["permissionDecision"] = "ask"
-		out["permissionDecisionReason"] = ask
-		notes = append([]string{"[" + ask + "]"}, notes...)
-	}
-	if len(notes) > 0 {
-		out["additionalContext"] = strings.Join(notes, "\n")
-	}
-	if len(out) > 1 {
-		emit(map[string]any{"hookSpecificOutput": out})
-	}
+	emitPreToolUse(ask, notes)
 }
 
 // ---------- PostToolUse on edits (async: network allowed) ----------
@@ -421,6 +474,10 @@ func hookPrePush(in HookIn) {
 	if c == nil {
 		return
 	}
+	recordPrePush(c)
+}
+
+func recordPrePush(c *Ctx) {
 	if sha, err := git(c.Repo.Top, "rev-parse", "@{u}"); err == nil {
 		writeJSON(c.path("prepush.json"), map[string]any{"sha": sha, "at": time.Now().Unix()})
 	}
@@ -630,6 +687,18 @@ func (c *Ctx) allowWake(sid string) bool {
 }
 
 func wakeNow(c *Ctx, sid string) int {
+	if agent == "codex" {
+		// Codex can't be woken from outside: tell the human with a desktop notification and leave the
+		// messages pending, so they reach Codex with the next prompt. The watcher ends here and is re-armed
+		// after the next turn, so the same news never notifies twice.
+		for _, it := range c.pending(sid, false) {
+			if it.Wake {
+				notify("crew: "+it.From, strings.TrimPrefix(formatItem(it), "[crew] "))
+				break
+			}
+		}
+		return 0
+	}
 	text := deliver(c, sid)
 	if text == "" {
 		return 0

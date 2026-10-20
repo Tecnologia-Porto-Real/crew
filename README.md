@@ -33,6 +33,22 @@ Requirements: `git` installed, a normal clone (not `--depth 1`) with a remote, C
 
 Prefer to enable it only in one repository? Run both commands inside that repository with `--scope local`.
 
+### Codex (OpenAI)
+
+The same repository is also a Codex plugin, and Claude Code and Codex users see each other in the same room.
+
+```bash
+codex plugin marketplace add Tecnologia-Porto-Real/crew
+```
+
+Then, inside Codex: open `/plugins`, install **crew**, start a new session, and open `/hooks` to trust crew's hooks
+(Codex asks this once for every plugin with hooks). Differences in Codex, which lacks two Claude Code features:
+
+- A teammate's question can't wake an idle Codex session. You get a desktop notification instead, and the message
+  reaches Codex with your next prompt.
+- Codex can't ask you before an edit, so editing a file a teammate reserved exclusively is **blocked** with an
+  explanation. If you agree to go ahead, tell Codex; it calls `crew_override` (the teammate is told) and retries.
+
 ## Using it
 
 ### What happens on its own
@@ -113,7 +129,8 @@ claude plugin uninstall crew@crew
   State expires after 24 h, messages after 7 days.
 - **Claude gets it through hooks**: a summary at session start, checks before edits and shell commands, a notice on
   `git push`, and a background watcher on idle sessions that wakes Claude only for things that matter.
-- Claude's tools: `crew_board`, `crew_post` (task, notice, question, note, done), `crew_reserve`, `crew_settings`.
+- Agent tools (any MCP-capable agent): `crew_board`, `crew_post` (task, notice, question, note, done), `crew_reserve`,
+  `crew_override`, `crew_settings`.
 
 ## Privacy and security — read this
 

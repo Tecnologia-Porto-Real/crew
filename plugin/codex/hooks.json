@@ -1,0 +1,102 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook session-start --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook session-start --agent codex",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook prompt --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook prompt --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook pre-edit --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook pre-edit --agent codex",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook pre-bash --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook pre-bash --agent codex",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-edit --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-edit --agent codex",
+            "timeout": 30,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-push --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-push --agent codex",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook watch --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook watch --agent codex",
+            "timeout": 3600,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook session-end --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook session-end --agent codex",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

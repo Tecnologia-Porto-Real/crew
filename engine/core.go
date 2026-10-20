@@ -101,7 +101,7 @@ func load(cwd string, probe bool) (*Ctx, string) {
 		pass, _ = hex.DecodeString(strings.TrimSpace(string(b)))
 	}
 	var vc visCache
-	readJSON(filepath.Join(rdir, "visibility.json"), &vc)
+	readJSON(filepath.Join(rdir, "visibility-v2.json"), &vc)
 	if vc.At == 0 || probe && time.Since(time.Unix(vc.At, 0)) > time.Hour {
 		res := probeVisibility(r)
 		vc.Result, vc.At = res, time.Now().Unix()
@@ -111,7 +111,7 @@ func load(cwd string, probe bool) (*Ctx, string) {
 		if res == "private" {
 			vc.LastPrivate = vc.At
 		}
-		writeJSON(filepath.Join(rdir, "visibility.json"), vc)
+		writeJSON(filepath.Join(rdir, "visibility-v2.json"), vc)
 	}
 	if why := visibilityGate(r, vc, len(pass) == 32); why != "" {
 		return nil, why
@@ -724,7 +724,7 @@ func (c *Ctx) board(max int) string {
 	peers := c.activePeers()
 	fmt.Fprintf(&b, "[crew] Team room for %s — you are %s. %s\n", c.Repo.Path, c.Me, dataNote)
 	if len(peers) == 0 {
-		b.WriteString("- No teammate activity in the last 24 h (teammates appear here once they use Claude Code with crew in this repo).\n")
+		b.WriteString("- No teammate activity in the last 24 h (teammates appear here once they use crew — in Claude Code or Codex — in this repo).\n")
 	}
 	for _, p := range peers {
 		who := p.Name + "#" + fp(p.Pub)

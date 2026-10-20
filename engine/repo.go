@@ -270,7 +270,19 @@ func probeHost(host, path string) string {
 		url += ".git"
 	}
 	cmd := exec.CommandContext(ctx, "git", "-c", "credential.helper=", "-c", "core.askPass=", "ls-remote", "--heads", "--", url)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_ASKPASS=", "SSH_ASKPASS=")
+	// truly anonymous: no system/global/repo config (credential helpers such as `gh auth setup-git`,
+	// url.insteadOf rewrites), nothing inherited from an outer git process, and a neutral directory
+	cmd.Dir = os.TempDir()
+	var env []string
+	for _, kv := range os.Environ() {
+		k := strings.ToUpper(strings.SplitN(kv, "=", 2)[0])
+		if strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "GCM_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_ASKPASS=", "SSH_ASKPASS=",
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	hideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

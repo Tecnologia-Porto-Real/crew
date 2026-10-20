@@ -79,6 +79,28 @@ sleep 4
 out=$(B board >/dev/null; hookB prompt "{\"session_id\":\"b2\",\"cwd\":\"$B_/bob\"}")
 check "every open session receives new messages" "$out" "users.login"
 
+# ---- Codex mode (same engine, Codex hook semantics) ----
+hookBc() { echo "$2" | (cd "$base/bob" && CREW_DATA="$base/data-bob" CREW_NO_NOTIFY=1 "$BIN" hook "$1" --agent codex); }
+patch='*** Begin Patch\n*** Add File: db/migrations/003_codex.sql\n+select 1;\n*** End Patch'
+j='{"session_id":"c1","cwd":"'"$B_"'/bob","tool_name":"apply_patch","tool_input":{"command":"'"$patch"'"}}'
+out=$(hookBc pre-edit "$j")
+check "codex: a patch into a reserved folder is denied (codex has no ask)" "$out" '"permissionDecision":"deny"'
+check "codex: the denial explains how the human can allow it" "$out" "crew_override"
+B override "db/migrations/003_codex.sql" "Bob's human agreed with Alice" >/dev/null
+out=$(hookBc pre-edit "$j")
+if echo "$out" | grep -q permissionDecision; then ko "codex: after the human's override the patch goes through" "$out"; else ok "codex: after the human's override the patch goes through"; fi
+check "codex: the teammate is told about the override" "$(A board)" "decided to edit db/migrations/003_codex.sql"
+hookBc session-start '{"session_id":"c2","cwd":"'"$B_"'/bob","source":"startup"}' >/dev/null
+echo '{"session_id":"c2","cwd":"'"$B_"'/bob"}' | (cd "$base/bob" && CREW_DATA="$base/data-bob" CREW_NO_NOTIFY=1 "$BIN" hook watch --agent codex 2>/dev/null) &
+cw=$!
+sleep 5
+A post question "Codex side: ok to merge the login refactor today?" >/dev/null
+for i in $(seq 1 40); do kill -0 $cw 2>/dev/null || break; sleep 1; done
+wait $cw; code=$?
+[ "$code" = 0 ] && ok "codex: the idle watcher notifies and exits without waking (exit 0)" || ko "codex watcher exit" "$code"
+out=$(hookBc prompt '{"session_id":"c2","cwd":"'"$B_"'/bob"}')
+check "codex: the question reaches Codex with the next prompt" "$out" "ok to merge the login refactor"
+
 out=$(A post note "SUPABASE_URL=https://x.supabase.co
 SUPABASE_KEY=abc123" 2>&1)
 check "env-file content is refused" "$out" ".env content"

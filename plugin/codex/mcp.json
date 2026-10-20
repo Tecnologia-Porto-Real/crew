@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "crew": {
+      "command": "git",
+      "args": [
+        "-c",
+        "alias.crew-run=!sh -c 'cd \"${GIT_PREFIX:-.}\" && exec sh ./runtime/run.sh \"$@\"' crew",
+        "crew-run",
+        "mcp"
+      ],
+      "cwd": "."
+    }
+  }
+}

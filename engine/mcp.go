@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -18,48 +19,69 @@ type rpcReq struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
+var repoProp = map[string]any{"type": "string", "description": "Absolute path of the repository you are working in (your current working directory)"}
+
+// withRepo adds the optional "repo" argument to a tool schema: agents like Codex start the MCP server outside
+// the project, so the tool call says which repository it is about.
+func withRepo(props map[string]any) map[string]any {
+	props["repo"] = repoProp
+	return props
+}
+
 var mcpTools = []map[string]any{
 	{
 		"name":        "crew_board",
 		"description": "Show what teammates' agents in this repo are doing: tasks, reserved files, recent edits and team messages.",
-		"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		"inputSchema": map[string]any{"type": "object", "properties": withRepo(map[string]any{})},
 	},
 	{
 		"name":        "crew_post",
 		"description": "Tell teammates' agents something. type: task = declare what you are working on (one line); notice = you changed a contract (schema, migration, types, API, env) — say what changed; question = a decision for the humans; note / done = short updates. Keep text short and factual, never secrets.",
 		"inputSchema": map[string]any{
 			"type": "object",
-			"properties": map[string]any{
+			"properties": withRepo(map[string]any{
 				"type":  map[string]any{"type": "string", "enum": []string{"task", "notice", "question", "note", "done"}},
 				"text":  map[string]any{"type": "string", "maxLength": maxText},
-				"to":    map[string]any{"type": "string", "description": "Optional teammate (Name#xxxx); empty = whole team"},
+				"to":    map[string]any{"type": "string", "description": "Optional teammate (Name#xxxxxx); empty = whole team"},
 				"files": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Repo-relative paths this is about"},
-			},
+			}),
 			"required": []string{"type", "text"},
 		},
 	},
 	{
 		"name":        "crew_reserve",
-		"description": "Reserve (or release) files or globs so teammates' agents know you are on them. Exclusive makes their edits ask their human first; use it only for risky shared files.",
+		"description": "Reserve (or release) files or globs so teammates' agents know you are on them. Exclusive makes their edits need their human's approval; use it only for risky shared files.",
 		"inputSchema": map[string]any{
 			"type": "object",
-			"properties": map[string]any{
+			"properties": withRepo(map[string]any{
 				"paths":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"exclusive": map[string]any{"type": "boolean"},
 				"reason":    map[string]any{"type": "string"},
 				"hours":     map[string]any{"type": "number", "minimum": 0.1, "maximum": 24},
 				"release":   map[string]any{"type": "boolean", "description": "true = release these paths (or all of yours if paths is empty)"},
-			},
+			}),
+		},
+	},
+	{
+		"name":        "crew_override",
+		"description": "Only after your human explicitly agreed: allow editing a path a teammate reserved exclusively, for 1 hour on this machine. The teammate is told. Never call it on your own initiative.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": withRepo(map[string]any{
+				"path":   map[string]any{"type": "string", "description": "Repo-relative file or folder"},
+				"reason": map[string]any{"type": "string", "description": "What the human decided, in a few words"},
+			}),
+			"required": []string{"path"},
 		},
 	},
 	{
 		"name":        "crew_settings",
-		"description": "Only when the user asks: turn crew off/on in this repo, or create a new room key (.claude/crew.key, to cut off people who lost access). Team passphrases are never set through Claude: the user runs the command shown by /crew:passphrase in their own terminal.",
+		"description": "Only when the user asks: turn crew off/on in this repo, or create a new room key (.claude/crew.key, to cut off people who lost access). Team passphrases are never set through the agent: the user runs the passphrase command in their own terminal.",
 		"inputSchema": map[string]any{
 			"type": "object",
-			"properties": map[string]any{
+			"properties": withRepo(map[string]any{
 				"action": map[string]any{"type": "string", "enum": []string{"off", "on", "new_key"}},
-			},
+			}),
 			"required": []string{"action"},
 		},
 	},
@@ -123,9 +145,26 @@ func serveMCP() int {
 	}
 }
 
-func cwdNow() string {
-	if d := os.Getenv("CLAUDE_PROJECT_DIR"); d != "" {
-		return d
+// repoFor finds the repository a tool call is about: the path the agent passed, then the project Claude Code
+// told us, then our own working directory if it is a repo, then the repo the latest hook ran in (Codex starts
+// MCP servers inside the plugin folder, not the project).
+func repoFor(arg string) string {
+	for _, d := range []string{arg, os.Getenv("CLAUDE_PROJECT_DIR")} {
+		if d != "" {
+			return d
+		}
+	}
+	if d, err := os.Getwd(); err == nil {
+		if top, err := git(d, "rev-parse", "--show-toplevel"); err == nil && top != "" && !strings.Contains(filepath.ToSlash(d), "/plugins/") {
+			return d
+		}
+	}
+	var a struct {
+		Cwd string `json:"cwd"`
+		At  int64  `json:"at"`
+	}
+	if readJSON(filepath.Join(dataRoot(), "active.json"), &a) && time.Since(time.Unix(a.At, 0)) < 12*time.Hour {
+		return a.Cwd
 	}
 	d, _ := os.Getwd()
 	return d
@@ -133,20 +172,21 @@ func cwdNow() string {
 
 func callTool(name string, raw json.RawMessage) (string, bool) {
 	var a struct {
-		Type       string   `json:"type"`
-		Text       string   `json:"text"`
-		To         string   `json:"to"`
-		Files      []string `json:"files"`
-		Paths      []string `json:"paths"`
-		Exclusive  bool     `json:"exclusive"`
-		Reason     string   `json:"reason"`
-		Hours      float64  `json:"hours"`
-		Release    bool     `json:"release"`
-		Action     string   `json:"action"`
-		Passphrase string   `json:"passphrase"`
+		Type      string   `json:"type"`
+		Text      string   `json:"text"`
+		To        string   `json:"to"`
+		Files     []string `json:"files"`
+		Paths     []string `json:"paths"`
+		Exclusive bool     `json:"exclusive"`
+		Reason    string   `json:"reason"`
+		Hours     float64  `json:"hours"`
+		Release   bool     `json:"release"`
+		Action    string   `json:"action"`
+		Repo      string   `json:"repo"`
+		Path      string   `json:"path"`
 	}
 	json.Unmarshal(raw, &a)
-	cwd := cwdNow()
+	cwd := repoFor(a.Repo)
 	if name == "crew_settings" {
 		switch a.Action {
 		case "off":
@@ -202,6 +242,30 @@ func callTool(name string, raw json.RawMessage) (string, bool) {
 			return err.Error(), true
 		}
 		return fmt.Sprintf("Sent to the team (%s).", typeLabel[a.Type]), false
+	case "crew_override":
+		p := norm(a.Path)
+		if p == "" || tooBroad(p) {
+			return "give the specific file or folder the human agreed to edit", true
+		}
+		withLock(c.path("overrides.lock"), func() error {
+			m := map[string]int64{}
+			readJSON(c.path("overrides.json"), &m)
+			for k, v := range m {
+				if v < time.Now().Unix() {
+					delete(m, k)
+				}
+			}
+			m[p] = time.Now().Add(time.Hour).Unix()
+			return writeJSON(c.path("overrides.json"), m)
+		})
+		note := fmt.Sprintf("%s's human decided to edit %s despite your exclusive reservation", c.Name, p)
+		if r := cleanIncoming(a.Reason, 160); r != "" {
+			note += ": " + r
+		}
+		if t, err := cleanOutgoing(note); err == nil {
+			c.sendMsg(ctx, "note", t, "", []string{p})
+		}
+		return "Override recorded for 1 hour on this machine for " + p + "; the teammate was told. Retry the edit.", false
 	case "crew_reserve":
 		var msg string
 		c.updateMe(func(m *Me) {
@@ -303,6 +367,21 @@ func cli(cmd string, args []string) int {
 		fmt.Println(t)
 	case "off", "on":
 		fmt.Println(setOff(cwd, cmd == "off"))
+	case "override":
+		if len(args) < 1 {
+			fmt.Println("usage: crew override <path> [reason]")
+			return 2
+		}
+		mm := map[string]any{"path": args[0]}
+		if len(args) > 1 {
+			mm["reason"] = args[1]
+		}
+		b, _ := json.Marshal(mm)
+		t, bad := callTool("crew_override", b)
+		fmt.Println(t)
+		if bad {
+			return 1
+		}
 	case "passphrase":
 		// typed by the human in their own terminal, so it never passes through Claude or its transcript
 		fmt.Print("Team passphrase (12+ characters, agreed outside the repository; empty line removes it): ")

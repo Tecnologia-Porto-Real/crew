@@ -33,6 +33,24 @@ recomendado 2.1.290+). Windows, macOS e Linux. Mais nada — sem Node, Python ou
 
 Quer ligar só em um repositório? Rode os dois comandos dentro dele com `--scope local`.
 
+### Codex (OpenAI)
+
+O mesmo repositório também é um plugin do Codex, e quem usa Claude Code e quem usa Codex se veem na mesma sala.
+
+```bash
+codex plugin marketplace add Tecnologia-Porto-Real/crew
+```
+
+Depois, dentro do Codex: abra `/plugins`, instale o **crew**, abra uma sessão nova e entre em `/hooks` para confiar
+nos hooks do crew (o Codex pede isso uma vez para todo plugin com hooks). Diferenças no Codex, que não tem dois
+recursos do Claude Code:
+
+- A pergunta de um colega não consegue acordar uma sessão parada do Codex. Você recebe uma notificação do sistema, e a
+  mensagem chega ao Codex no seu próximo prompt.
+- O Codex não sabe perguntar antes de uma edição, então editar um arquivo que um colega reservou com exclusividade é
+  **bloqueado**, com explicação. Se você concordar em seguir, diga ao Codex; ele chama `crew_override` (o colega é
+  avisado) e tenta de novo.
+
 ## Como usar
 
 ### O que acontece sozinho
@@ -113,7 +131,8 @@ claude plugin uninstall crew@crew
   horários — nunca o conteúdo. O estado expira em 24 h; as mensagens, em 7 dias.
 - **O Claude recebe tudo por hooks**: resumo ao abrir a sessão, checagem antes de edições e comandos, aviso no
   `git push` e um vigia nas sessões paradas que só acorda o Claude para o que importa.
-- Ferramentas do Claude: `crew_board`, `crew_post` (task, notice, question, note, done), `crew_reserve`, `crew_settings`.
+- Ferramentas do agente (qualquer agente com MCP): `crew_board`, `crew_post` (task, notice, question, note, done),
+  `crew_reserve`, `crew_override`, `crew_settings`.
 
 ## Privacidade e segurança — leia
 

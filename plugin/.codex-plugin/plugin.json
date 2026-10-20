@@ -1,0 +1,21 @@
+{
+  "name": "crew",
+  "version": "0.3.0",
+  "description": "Zero-setup coordination between your teammates' AI coding agents (Claude Code, Codex): see who is doing what, reserved files, contract changes and questions — derived from your git repo, end-to-end encrypted over public Nostr relays. No account, no server.",
+  "keywords": [
+    "team",
+    "coordination",
+    "multi-agent",
+    "git",
+    "nostr"
+  ],
+  "hooks": "./codex/hooks.json",
+  "mcpServers": "./codex/mcp.json",
+  "interface": {
+    "displayName": "Crew",
+    "shortDescription": "Your teammates' coding agents, aware of each other",
+    "developerName": "Tecnologia Porto Real",
+    "category": "Productivity",
+    "websiteUrl": "https://github.com/Tecnologia-Porto-Real/crew"
+  }
+}

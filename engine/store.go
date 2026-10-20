@@ -15,10 +15,9 @@ import (
 	"time"
 )
 
+// dataRoot is the same for every agent (Claude Code, Codex…), so hooks and the MCP server of any agent on
+// this machine share one device identity and one view of the room.
 func dataRoot() string {
-	if d := os.Getenv("CLAUDE_PLUGIN_DATA"); d != "" {
-		return d
-	}
 	if d := os.Getenv("CREW_DATA"); d != "" {
 		return d
 	}
