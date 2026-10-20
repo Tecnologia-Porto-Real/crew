@@ -1,3 +1,5 @@
 engine/crew
 engine/*.exe
 *.tmp
+.old-*
+*~

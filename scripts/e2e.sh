@@ -44,6 +44,13 @@ check "editing a file reserved exclusively asks the human first" "$out" '"permis
 out=$(hookB pre-edit "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$B_/bob/src/app.ts\"}}")
 if echo "$out" | grep -q permissionDecision; then ko "normal file is not blocked" "$out"; else ok "normal file is not blocked"; fi
 
+j='{"session_id":"b1","cwd":"'"$B_"'/bob","tool_name":"Bash","tool_input":{"command":"f=\"db/migrations/$(date +%Y)_x.sql\" && : > \"$f\""}}'; out=$(hookB pre-bash "$j")
+check "a shell command writing into a reserved folder asks the human" "$out" '"permissionDecision":"ask"'
+out=$(hookB pre-bash "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npx supabase migration new add_x\"}}")
+check "a migration generator command asks the human" "$out" '"permissionDecision":"ask"'
+out=$(hookB pre-bash "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls db/migrations && cat db/migrations/001.sql\"}}")
+if echo "$out" | grep -q permissionDecision; then ko "reading a reserved folder is free" "$out"; else ok "reading a reserved folder is free"; fi
+
 # Bob's session goes idle: the Stop hook waits for the team
 errf="$base/watch.err"
 echo "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\"}" | (cd "$base/bob" && CREW_DATA="$base/data-bob" "$BIN" hook watch 2>"$errf") &

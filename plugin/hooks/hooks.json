@@ -58,6 +58,24 @@
         ]
       },
       {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "pre-bash"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

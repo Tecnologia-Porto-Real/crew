@@ -74,6 +74,8 @@ func dispatch(cmd string, args []string) int {
 			hookPreEdit(in)
 		case "post-edit":
 			hookPostEdit(in)
+		case "pre-bash":
+			hookPreBash(in)
 		case "pre-push":
 			hookPrePush(in)
 		case "post-push":
@@ -298,6 +300,77 @@ func (c *Ctx) warnOnce(key string) bool {
 		return nil
 	})
 	return ok
+}
+
+// ---------- PreToolUse on Bash (local only): writes into a teammate's exclusive reservation ----------
+
+var (
+	reWriteCmd = regexp.MustCompile(`(^|[\s;&|(])(touch|rm|mv|cp|mkdir|rmdir|tee|truncate|install|ln|chmod|dd|patch|unzip|tar)\b|(^|[^0-9&])>{1,2}\s*[^&\s]|\bsed\s+(-[a-z]*i|--in-place)|\bgit\s+(mv|rm|checkout|restore|apply|stash)\b|\b(Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Copy-Item)\b`)
+	// tools that create migration files without naming the path
+	reMigrationCmd = regexp.MustCompile(`\bmigration\s+new\b|\bmigrate\s+(dev|create|diff)\b|\bmakemigrations\b|\balembic\s+revision\b|\bdrizzle-kit\s+generate\b|\bdb:generate\b|\bgenerate:migration\b`)
+	reTokenSplit   = regexp.MustCompile("[\\s;&|<>()`'\"=]+")
+)
+
+func hookPreBash(in HookIn) {
+	cmd := in.ToolInput.Command
+	if strings.TrimSpace(cmd) == "" {
+		return
+	}
+	c, _ := load(in.Cwd, false)
+	if c == nil {
+		return
+	}
+	writes := reWriteCmd.MatchString(cmd)
+	migration := reMigrationCmd.MatchString(cmd)
+	var notes []string
+	var ask string
+	if writes || migration {
+		// candidate paths named in the command, relative to the repo
+		var paths []string
+		for _, tok := range reTokenSplit.Split(cmd, -1) {
+			tok = strings.TrimSpace(tok)
+			if tok == "" || strings.HasPrefix(tok, "-") || !strings.ContainsAny(tok, "/\\.") {
+				continue
+			}
+			if rel := relPath(c, in.Cwd, tok); rel != "" {
+				paths = append(paths, rel)
+			}
+		}
+		if migration {
+			paths = append(paths, "supabase/migrations/new.sql", "migrations/new.sql", "prisma/migrations/new/migration.sql", "db/migrations/new.sql", "drizzle/new.sql", "alembic/versions/new.py")
+		}
+	outer:
+		for _, p := range c.activePeers() {
+			who := p.Name + "#" + fp(p.Pub)
+			for _, r := range liveReservations(p.State.Reservations) {
+				if !r.Exclusive {
+					continue
+				}
+				for _, path := range paths {
+					if match(path, r.Path) || match(r.Path, path) {
+						ask = fmt.Sprintf("crew: this command changes files under %s, which %s reserved exclusively until %s%s. Approve only if you agreed with them.",
+							cleanIncoming(r.Path, 120), who, time.Unix(r.Until, 0).Format("15:04"), reasonSuffix(r.Reason))
+						break outer
+					}
+				}
+			}
+		}
+	}
+	if d := deliver(c, in.SessionID); d != "" {
+		notes = append(notes, d)
+	}
+	out := map[string]any{"hookEventName": "PreToolUse"}
+	if ask != "" {
+		out["permissionDecision"] = "ask"
+		out["permissionDecisionReason"] = ask
+		notes = append([]string{"[" + ask + "]"}, notes...)
+	}
+	if len(notes) > 0 {
+		out["additionalContext"] = strings.Join(notes, "\n")
+	}
+	if len(out) > 1 {
+		emit(map[string]any{"hookSpecificOutput": out})
+	}
 }
 
 // ---------- PostToolUse on edits (async: network allowed) ----------
