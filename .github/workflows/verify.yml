@@ -1,0 +1,20 @@
+name: verify
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: engine/go.mod
+      - name: Unit tests
+        run: cd engine && go vet ./... && go test ./...
+      - name: Rebuild binaries from source
+        run: sh scripts/build.sh
+      - name: Committed binaries must match the source
+        run: git diff --exit-code -- plugin/runtime/ || (echo "::error::plugin/runtime binaries differ from a clean build of engine/" && exit 1)
