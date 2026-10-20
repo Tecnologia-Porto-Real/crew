@@ -47,7 +47,7 @@ Then, inside Codex: open `/plugins`, install **crew**, start a new session, and 
 - A teammate's question can't wake an idle Codex session. You get a desktop notification instead, and the message
   reaches Codex with your next prompt.
 - Codex can't ask you before an edit, so editing a file a teammate reserved exclusively is **blocked** with an
-  explanation. If you agree to go ahead, tell Codex; it calls `crew_override` (the teammate is told) and retries.
+  explanation. If you agree to go ahead, tell Codex; it sends an override (the teammate is told) and retries.
 
 ## Using it
 
@@ -55,25 +55,27 @@ Then, inside Codex: open `/plugins`, install **crew**, start a new session, and 
 
 | When | What you see |
 |---|---|
-| You open a session | One line: who else is in the room and what they are doing. Claude gets the details (tasks, reserved files, unread messages). |
-| Claude edits a file a teammate is editing | Claude is told, so it can be careful or ask you. |
-| Claude touches a file a teammate **reserved exclusively** | Claude Code asks **you** to approve first (also for shell commands that write, delete or generate migrations there). |
-| Claude edits a **contract file** (migration, `*.sql`, schema, generated types, `package.json`/lockfile, Dockerfile…) | It is reserved for you automatically for 2 h, and Claude is reminded to tell the team what changed. |
-| You `git push` | Teammates get a short notice: commits and contract files changed. |
-| A teammate asks a question, sends a notice that touches your files, or messages you directly — while your session is idle | Your session wakes up by itself and Claude shows it (the reply starts with 📨). At most 4 wakes per hour. |
-| Anything else (notes, task changes) | Waits for your next message — no tokens spent. |
+crew is deliberately quiet. Research on parallel coding agents shows that declaring scope up front and
+announcing contract changes prevents conflicts, while status updates and agent-to-agent chat only cost tokens
+and time. So the agent writes at most one line per task, and the hooks do the rest.
 
-### What to say to Claude
+| When | What happens |
+|---|---|
+| You open a session | One line per teammate: their declared scope and reserved files. The agent declares its own scope once the task is clear. |
+| The agent edits a file | That file is leased to you for 1 h (renewed while you edit). Git-ignored and generated files (lockfiles, build output, generated types) are skipped. |
+| The agent edits a file a teammate is editing | One short FYI line, at most once every 10 min. |
+| The agent touches a file a teammate **reserved exclusively** (contract files: migrations, `*.sql`, schemas, `package.json`, Dockerfile…) | Claude Code asks **you** first; Codex blocks and asks you to agree (also for shell commands that write there). |
+| You `git push` contract files | Teammates get a one-line notice, shown mid-task only to agents working on those files. |
+| A teammate asks the team or you a question while your session is idle | Claude wakes up (📨), at most 3 times per hour and 10 min apart; Codex shows a desktop notification. |
+| Anything else | Stays on the board (`crew_read`) — zero tokens until someone asks. |
 
-Just talk normally; Claude has the crew tools.
+### What to say to the agent
 
-- "What is the team working on?"
-- "Tell the team I'm working on the checkout page."
-- "Reserve `supabase/migrations` exclusively for the next 2 hours, I'm changing the schema."
-- "Tell the team I renamed `users.email` to `users.login` and regenerated the types."
-- "Ask the team whether we drop the old payments table."
-- "Tell Ana#7f3c that the API is ready."
-- "Release my reservations."
+Usually nothing. When needed:
+
+- "What is the team doing?" (`crew_read`)
+- "Ask the team whether we drop the old payments table." (question)
+- "Answer Ana#7f3c1a: yes, the API is ready." (answer)
 
 ### Commands
 
@@ -129,8 +131,8 @@ claude plugin uninstall crew@crew
   State expires after 24 h, messages after 7 days.
 - **Claude gets it through hooks**: a summary at session start, checks before edits and shell commands, a notice on
   `git push`, and a background watcher on idle sessions that wakes Claude only for things that matter.
-- Agent tools (any MCP-capable agent): `crew_board`, `crew_post` (task, notice, question, note, done), `crew_reserve`,
-  `crew_override`, `crew_settings`.
+- Agent tools (any MCP-capable agent): `crew_read`, `crew_send` (scope, question, answer, notice, override) and
+  `crew_settings`. Messages are one line (200 characters max) and an agent can send at most 6 per hour.
 
 ## Privacy and security — read this
 

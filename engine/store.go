@@ -127,15 +127,16 @@ type Peer struct {
 }
 
 type Item struct {
-	Seq   int64    `json:"seq"`
-	ID    string   `json:"id"`
-	Type  string   `json:"type"`
-	From  string   `json:"from"` // Name#fp
-	To    string   `json:"to,omitempty"`
-	Text  string   `json:"text"`
-	Files []string `json:"files,omitempty"`
-	At    int64    `json:"at"`
-	Wake  bool     `json:"wake,omitempty"`
+	Seq      int64    `json:"seq"`
+	ID       string   `json:"id"`
+	Type     string   `json:"type"`
+	From     string   `json:"from"` // Name#fp
+	To       string   `json:"to,omitempty"`
+	Text     string   `json:"text"`
+	Files    []string `json:"files,omitempty"`
+	At       int64    `json:"at"`
+	Wake     bool     `json:"wake,omitempty"`     // worth waking an idle session
+	Relevant bool     `json:"relevant,omitempty"` // worth showing mid-task (else only on the board)
 }
 
 type Spool struct {

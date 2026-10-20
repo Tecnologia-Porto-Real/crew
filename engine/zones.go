@@ -103,3 +103,33 @@ func (c *Ctx) contractZone(file string) bool {
 	}
 	return false
 }
+
+// generated files are produced from a source (lockfiles, generated types, build output, snapshots): leasing
+// them only produces noise, so crew leases their source instead.
+var generatedZones = []string{
+	"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "go.sum", "Cargo.lock",
+	"poetry.lock", "uv.lock", "composer.lock", "Gemfile.lock",
+	"**/*.gerado.*", "**/*.generated.*", "**/*.gen.*", "**/database.types*.ts", "**/__snapshots__/**",
+	"dist/**", "build/**", ".next/**", "out/**", "coverage/**",
+}
+
+// untracked: the file is ignored by git or generated; crew neither leases it nor warns about it.
+func (c *Ctx) untracked(rel string) bool {
+	for _, z := range generatedZones {
+		if match(rel, z) {
+			return true
+		}
+	}
+	_, err := git(c.Repo.Top, "check-ignore", "-q", "--", rel)
+	return err == nil // exit 0 = ignored
+}
+
+// coveredBy: an existing lease (a declared scope glob) already covers this file.
+func coveredBy(rel string, l []Reservation) bool {
+	for _, r := range l {
+		if r.Path != rel && match(rel, r.Path) {
+			return true
+		}
+	}
+	return false
+}

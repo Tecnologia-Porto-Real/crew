@@ -154,23 +154,34 @@ func hookSessionStart(in HookIn) {
 	readJSON(c.path("read.json"), &read)
 	sp := c.loadSpool()
 	var unread []string
+	// before new work starts, every contract change counts; questions and answers only if they are for us
 	for _, it := range sp.Items {
-		if it.Seq > read.Seq {
-			unread = append(unread, formatItem(it))
+		if it.Seq <= read.Seq {
+			continue
 		}
-	}
-	if len(unread) > 10 {
-		unread = unread[len(unread)-10:]
+		switch it.Type {
+		case "push", "notice", "reservation":
+		case "question", "answer":
+			if !it.Relevant {
+				continue
+			}
+		default:
+			continue
+		}
+		unread = append(unread, formatItem(it))
 	}
 	writeJSON(c.path("read.json"), map[string]int64{"Seq": sp.Seq})
 	c.startSession(in.SessionID)
 
-	text := c.board(1600)
+	text := c.boardBrief()
+	if len(unread) > 5 {
+		unread = unread[len(unread)-5:]
+	}
 	if len(unread) > 0 {
-		text += "- Unread team messages:\n  " + strings.Join(unread, "\n  ") + "\n"
+		text += strings.Join(unread, "\n") + "\n"
 	}
 	if !online {
-		text += "- Could not reach the relays right now; the board may be out of date.\n"
+		text += "(relays unreachable; board may be stale)\n"
 	}
 	out := map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": text}}
 	if in.Source == "startup" || in.Source == "" {
@@ -221,16 +232,17 @@ func hookPrompt(in HookIn) {
 }
 
 func deliver(c *Ctx, sid string) string {
-	items := c.pending(sid, true)
-	if len(items) == 0 {
+	var l []string
+	for _, it := range c.pending(sid, true) {
+		if it.Relevant || it.Type == "reservation" {
+			l = append(l, formatItem(it))
+		}
+	}
+	if len(l) == 0 {
 		return ""
 	}
-	if len(items) > 10 {
-		items = items[len(items)-10:]
-	}
-	var l []string
-	for _, it := range items {
-		l = append(l, formatItem(it))
+	if len(l) > 5 {
+		l = l[len(l)-5:]
 	}
 	return dataNote + "\n" + strings.Join(l, "\n")
 }
@@ -267,8 +279,8 @@ func hookPreEdit(in HookIn) {
 			continue
 		}
 		rel := relPath(c, in.Cwd, file)
-		if rel == "" {
-			continue
+		if rel == "" || c.untracked(rel) {
+			continue // ignored and generated files are nobody's business
 		}
 		for _, p := range c.activePeers() {
 			who := p.Name + "#" + fp(p.Pub)
@@ -277,42 +289,32 @@ func hookPreEdit(in HookIn) {
 					continue
 				}
 				if r.Exclusive && ask == "" && !c.overridden(rel) {
-					ask = fmt.Sprintf("crew: %s reserved %s exclusively until %s%s. Editing it in parallel may break their work — approve only if you agreed with them.",
-						who, cleanIncoming(r.Path, 120), time.Unix(r.Until, 0).Format("15:04"), reasonSuffix(r.Reason))
+					ask = fmt.Sprintf("crew: %s reserved %s (exclusive, until %s). Parallel edits may break their work.",
+						who, cleanIncoming(r.Path, 120), time.Unix(r.Until, 0).Format("15:04"))
 				} else if !r.Exclusive && c.warnOnce(rel+"|"+p.Pub) {
-					notes = append(notes, fmt.Sprintf("[crew] %s is also working on %s (shared reservation%s). Parallel edits to the same file may conflict.", who, rel, reasonSuffix(r.Reason)))
-				}
-			}
-			if ask == "" {
-				for _, t := range recentTouches(p.State.Touched, 2*time.Hour) {
-					if strings.EqualFold(t.Path, rel) && c.warnOnce(rel+"|t|"+p.Pub) {
-						notes = append(notes, fmt.Sprintf("[crew] %s edited %s %s (possibly not pushed yet). Consider pulling or checking with them before changing it.", who, rel, ago(t.At)))
-					}
+					notes = append(notes, fmt.Sprintf("crew: %s is also editing %s. FYI, no reply needed.", who, rel))
 				}
 			}
 		}
-		// record what I'm editing; contract zones get an automatic exclusive reservation
-		contract := c.contractZone(rel)
+		// the edit itself is the lease: 1 h, renewed on every edit; contract files are exclusive
+		exclusive := c.contractZone(rel)
 		c.updateMe(func(m *Me) {
 			now := time.Now().Unix()
 			m.Touched = append(recentTouches(m.Touched, 8*time.Hour), Touch{Path: rel, At: now})
-			if contract {
-				found := false
-				for i := range m.Reservations {
-					if m.Reservations[i].Path == rel {
-						m.Reservations[i].Until = now + 7200
-						found = true
-					}
+			m.Reservations = liveReservations(m.Reservations)
+			found := false
+			for i := range m.Reservations {
+				if m.Reservations[i].Path == rel {
+					m.Reservations[i].Until = now + int64(leaseTTL.Seconds())
+					m.Reservations[i].Exclusive = m.Reservations[i].Exclusive || exclusive
+					found = true
 				}
-				if !found {
-					m.Reservations = append(liveReservations(m.Reservations), Reservation{Path: rel, Exclusive: true, Until: now + 7200, Auto: true, Reason: "contract file being changed"})
-				}
+			}
+			if !found && !coveredBy(rel, m.Reservations) {
+				m.Reservations = append(m.Reservations, Reservation{Path: rel, Exclusive: exclusive, Until: now + int64(leaseTTL.Seconds()), Auto: true})
 			}
 			m.Dirty = true
 		})
-		if contract && c.warnOnce("contract|"+rel) {
-			notes = append(notes, fmt.Sprintf("[crew] %s is a contract file (schema, migration, types, dependencies or API). Teammates' agents now see it as reserved; after changing it, send a short contract notice with the crew_post tool (type \"notice\") saying what changed.", rel))
-		}
 	}
 	if d := deliver(c, in.SessionID); d != "" {
 		notes = append(notes, d)
@@ -326,7 +328,7 @@ func emitPreToolUse(ask string, notes []string) {
 	out := map[string]any{"hookEventName": "PreToolUse"}
 	if ask != "" {
 		if agent == "codex" {
-			ask += " This edit was blocked: ask your human. If they agree, call the crew_override tool for that path (it tells the teammate) and retry."
+			ask += " Blocked: ask your human; if they agree, crew_send type override with that file, then retry."
 			out["permissionDecision"] = "deny"
 		} else {
 			out["permissionDecision"] = "ask"
@@ -525,19 +527,19 @@ func hookPostPush(in HookIn) {
 			}
 		}
 	}
-	subj := strings.Split(strings.TrimSpace(commits), "\n")
-	branch, _ := git(c.Repo.Top, "rev-parse", "--abbrev-ref", "@{u}")
-	text := fmt.Sprintf("pushed %d commit(s) to %s: %s", len(subj), branch, strings.Join(trimList(subj, 5), "; "))
-	if len(contract) > 0 {
-		text += ". Contract files changed: " + strings.Join(trimList(contract, 8), ", ") + " — pull before building on them"
-	}
-	text = redact(text)
-	if r := []rune(text); len(r) > maxText {
-		text = string(r[:maxText-1]) + "…"
-	}
 	ctx, cancel := withTimeout(10 * time.Second)
 	defer cancel()
-	c.sendMsg(ctx, "push", text, "", trimList(files, 40))
+	// only contract changes are news to teammates; other pushes just release this device's leases
+	if len(contract) > 0 {
+		subj := strings.Split(strings.TrimSpace(commits), "\n")
+		branch, _ := git(c.Repo.Top, "rev-parse", "--abbrev-ref", "@{u}")
+		text := fmt.Sprintf("pushed %s to %s (%s) — pull before building on them", strings.Join(trimList(contract, 4), ", "), branch, subj[0])
+		text = redact(text)
+		if r := []rune(text); len(r) > maxText {
+			text = string(r[:maxText-1]) + "…"
+		}
+		c.sendMsg(ctx, "push", text, "", trimList(contract, 20), false)
+	}
 	c.updateMe(func(m *Me) {
 		keep := []Reservation{}
 		for _, r := range liveReservations(m.Reservations) {
@@ -679,7 +681,7 @@ func (c *Ctx) allowWake(sid string) bool {
 			keep = append(keep, t)
 		}
 	}
-	if len(keep) >= wakesPerHr {
+	if len(keep) >= wakesPerHr || len(keep) > 0 && time.Since(time.Unix(keep[len(keep)-1], 0)) < wakeGap {
 		return false
 	}
 	writeJSON(p, append(keep, time.Now().Unix()))

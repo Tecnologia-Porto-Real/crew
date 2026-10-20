@@ -48,7 +48,7 @@ recursos do Claude Code:
 - A pergunta de um colega não consegue acordar uma sessão parada do Codex. Você recebe uma notificação do sistema, e a
   mensagem chega ao Codex no seu próximo prompt.
 - O Codex não sabe perguntar antes de uma edição, então editar um arquivo que um colega reservou com exclusividade é
-  **bloqueado**, com explicação. Se você concordar em seguir, diga ao Codex; ele chama `crew_override` (o colega é
+  **bloqueado**, com explicação. Se você concordar em seguir, diga ao Codex; ele envia uma liberação (o colega é
   avisado) e tenta de novo.
 
 ## Como usar
@@ -57,25 +57,27 @@ recursos do Claude Code:
 
 | Quando | O que você vê |
 |---|---|
-| Você abre uma sessão | Uma linha dizendo quem mais está na sala e no que está. O Claude recebe os detalhes (tarefas, arquivos reservados, mensagens não lidas). |
-| O Claude edita um arquivo que um colega está editando | O Claude é avisado, para tomar cuidado ou te perguntar. |
-| O Claude mexe num arquivo que um colega **reservou com exclusividade** | O Claude Code pede **a sua** aprovação antes (também para comandos de terminal que escrevem, apagam ou geram migrations ali). |
-| O Claude edita um **arquivo de contrato** (migration, `*.sql`, esquema, tipos gerados, `package.json`/lock, Dockerfile…) | Ele fica reservado para você por 2 h automaticamente, e o Claude é lembrado de avisar o time do que mudou. |
-| Você dá `git push` | Os colegas recebem um aviso curto: commits e arquivos de contrato alterados. |
-| Um colega faz uma pergunta, manda um aviso que toca seus arquivos ou fala direto com você — e sua sessão está parada | A sessão acorda sozinha e o Claude mostra (a resposta começa com 📨). No máximo 4 vezes por hora. |
-| O resto (recados, troca de tarefa) | Espera a sua próxima mensagem — sem gastar tokens. |
+O crew é silencioso de propósito. Pesquisas com agentes de código em paralelo mostram que declarar o escopo antes
+e avisar mudanças de contrato evita conflitos, enquanto atualizações de status e conversa entre agentes só gastam
+tokens e tempo. Por isso o agente escreve no máximo uma linha por tarefa, e os hooks fazem o resto.
 
-### O que dizer ao Claude
+| Quando | O que acontece |
+|---|---|
+| Você abre uma sessão | Uma linha por colega: escopo declarado e arquivos reservados. O agente declara o próprio escopo quando a tarefa fica clara. |
+| O agente edita um arquivo | O arquivo fica reservado para você por 1 h (renovado enquanto edita). Arquivos ignorados pelo git e gerados (lock, build, tipos gerados) ficam de fora. |
+| O agente edita um arquivo que um colega está editando | Uma linha de aviso, no máximo a cada 10 min. |
+| O agente mexe num arquivo **reservado com exclusividade** (arquivos de contrato: migrations, `*.sql`, esquemas, `package.json`, Dockerfile…) | O Claude Code pede **a sua** aprovação; o Codex bloqueia e pede que você concorde (vale também para comandos de terminal que escrevem ali). |
+| Você dá `git push` em arquivos de contrato | Os colegas recebem um aviso de uma linha, mostrado no meio da tarefa só para quem está mexendo nesses arquivos. |
+| Um colega faz uma pergunta ao time ou a você e sua sessão está parada | O Claude acorda (📨), no máximo 3 vezes por hora e com 10 min de intervalo; o Codex mostra uma notificação do sistema. |
+| O resto | Fica no quadro (`crew_read`) — zero tokens até alguém pedir. |
 
-É só falar normalmente; o Claude tem as ferramentas do crew.
+### O que dizer ao agente
 
-- "O que o time está fazendo?"
-- "Avisa o time que estou na página de checkout."
-- "Reserva `supabase/migrations` com exclusividade pelas próximas 2 horas, vou mudar o esquema."
-- "Avisa o time que renomeei `users.email` para `users.login` e regenerei os tipos."
-- "Pergunta ao time se a gente apaga a tabela antiga de pagamentos."
-- "Diz pra Ana#7f3c que a API está pronta."
-- "Libera minhas reservas."
+Normalmente, nada. Quando precisar:
+
+- "O que o time está fazendo?" (`crew_read`)
+- "Pergunta ao time se a gente apaga a tabela antiga de pagamentos." (pergunta)
+- "Responde pra Ana#7f3c1a: sim, a API está pronta." (resposta)
 
 ### Comandos
 
@@ -131,8 +133,8 @@ claude plugin uninstall crew@crew
   horários — nunca o conteúdo. O estado expira em 24 h; as mensagens, em 7 dias.
 - **O Claude recebe tudo por hooks**: resumo ao abrir a sessão, checagem antes de edições e comandos, aviso no
   `git push` e um vigia nas sessões paradas que só acorda o Claude para o que importa.
-- Ferramentas do agente (qualquer agente com MCP): `crew_board`, `crew_post` (task, notice, question, note, done),
-  `crew_reserve`, `crew_override`, `crew_settings`.
+- Ferramentas do agente (qualquer agente com MCP): `crew_read`, `crew_send` (scope, question, answer, notice, override)
+  e `crew_settings`. Mensagens têm uma linha (até 200 caracteres) e cada agente envia no máximo 6 por hora.
 
 ## Privacidade e segurança — leia
 
