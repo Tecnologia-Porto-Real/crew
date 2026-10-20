@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "crew": {
+      "command": "git",
+      "args": [
+        "-c",
+        "alias.crew-run=!sh",
+        "crew-run",
+        "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+        "mcp"
+      ]
+    }
+  }
+}

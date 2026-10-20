@@ -1,0 +1,17 @@
+{
+  "name": "crew",
+  "displayName": "Crew",
+  "version": "0.1.0",
+  "description": "Zero-setup coordination between your teammates’ AI coding agents: see who is doing what, reserved files, contract changes and questions — derived from your git repo, end-to-end encrypted over public Nostr relays. No account, no server.",
+  "author": {
+    "name": "Tecnologia Porto Real"
+  },
+  "license": "MIT",
+  "keywords": [
+    "team",
+    "coordination",
+    "multi-agent",
+    "git",
+    "nostr"
+  ]
+}

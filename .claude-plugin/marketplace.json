@@ -1,0 +1,14 @@
+{
+  "name": "crew",
+  "description": "Crew: zero-setup coordination for teammates’ AI coding agents",
+  "owner": {
+    "name": "Tecnologia Porto Real"
+  },
+  "plugins": [
+    {
+      "name": "crew",
+      "source": "./plugin",
+      "description": "Zero-setup coordination between teammates’ AI coding agents, derived from your git repo."
+    }
+  ]
+}

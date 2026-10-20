@@ -1,0 +1,3 @@
+* text=auto eol=lf
+plugin/runtime/crew-* binary
+*.exe binary

@@ -1,0 +1,160 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "session-start"
+            ],
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "prompt"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "pre-edit"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "pre-push"
+            ],
+            "timeout": 5,
+            "if": "Bash(git push*)"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "post-edit"
+            ],
+            "timeout": 30,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "post-push"
+            ],
+            "timeout": 20,
+            "if": "Bash(git push*)"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "watch"
+            ],
+            "timeout": 86400,
+            "asyncRewake": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "session-end"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
