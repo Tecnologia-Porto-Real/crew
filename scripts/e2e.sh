@@ -28,6 +28,7 @@ echo "alice: $ra"; echo "bob:   $rb"
 
 out=$(hookA session-start "{\"session_id\":\"a1\",\"cwd\":\"$B_/alice\",\"source\":\"startup\"}")
 check "first teammate sees an empty room" "$out" "no teammates yet"
+if echo "$out" | grep -q additionalContext; then ko "a solo session costs the model no tokens" "$out"; else ok "a solo session costs the model no tokens"; fi
 
 out=$(hookB session-start "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"source\":\"startup\"}")
 check "second teammate sees the first one, no setup" "$out" "Alice#"

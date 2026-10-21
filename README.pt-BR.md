@@ -55,20 +55,18 @@ recursos do Claude Code:
 
 ### O que acontece sozinho
 
-| Quando | O que você vê |
-|---|---|
 O crew é silencioso de propósito. Pesquisas com agentes de código em paralelo mostram que declarar o escopo antes
 e avisar mudanças de contrato evita conflitos, enquanto atualizações de status e conversa entre agentes só gastam
 tokens e tempo. Por isso o agente escreve no máximo uma linha por tarefa, e os hooks fazem o resto.
 
 | Quando | O que acontece |
 |---|---|
-| Você abre uma sessão | Uma linha por colega: escopo declarado e arquivos reservados. O agente declara o próprio escopo quando a tarefa fica clara. |
+| Você abre uma sessão | Uma linha por colega: escopo declarado e arquivos reservados. O agente declara o próprio escopo quando a tarefa fica clara. Sem colegas ativos nas últimas 24 h, o agente não recebe nada (só você vê uma linha de status). |
 | O agente edita um arquivo | O arquivo fica reservado para você por 1 h (renovado enquanto edita). Arquivos ignorados pelo git e gerados (lock, build, tipos gerados) ficam de fora. |
 | O agente edita um arquivo que um colega está editando | Uma linha de aviso, no máximo a cada 10 min. |
 | O agente mexe num arquivo **reservado com exclusividade** (arquivos de contrato: migrations, `*.sql`, esquemas, `package.json`, Dockerfile…) | O Claude Code pede **a sua** aprovação; o Codex bloqueia e pede que você concorde (vale também para comandos de terminal que escrevem ali). |
 | Você dá `git push` em arquivos de contrato | Os colegas recebem um aviso de uma linha, mostrado no meio da tarefa só para quem está mexendo nesses arquivos. |
-| Um colega faz uma pergunta ao time ou a você e sua sessão está parada | O Claude acorda (📨), no máximo 3 vezes por hora e com 10 min de intervalo; o Codex mostra uma notificação do sistema. |
+| Um colega faz uma pergunta ao time ou a você e sua sessão está parada | O Claude acorda (📨) só para te avisar — não começa trabalho sozinho —, no máximo 3 vezes por hora e com 10 min de intervalo; o Codex mostra uma notificação do sistema. |
 | O resto | Fica no quadro (`crew_read`) — zero tokens até alguém pedir. |
 
 ### O que dizer ao agente
@@ -148,7 +146,7 @@ claude plugin uninstall crew@crew
   `dono/repo`, que dá para adivinhar. Nesse caso rode `/crew:new-key` uma vez e faça commit de `.claude/crew.key`.
 - **Sem sigilo futuro:** quem ganhar acesso de leitura ao repo depois consegue decifrar mensagens que os relays ainda
   guardem (eles são instruídos a apagar em 7 dias, mas isso depende de cada relay).
-- Mensagens têm até 500 caracteres, formatos comuns de segredo são removidos, conteúdo de `.env` é recusado e o texto
+- Mensagens têm até 200 caracteres, formatos comuns de segredo são removidos, conteúdo de `.env` é recusado e o texto
   que chega é mostrado ao Claude como informação de um colega — nunca como instrução.
 - Os operadores dos relays veem metadados (IP, horário, tamanho aproximado, quantos aparelhos falam numa sala). Se sua
   empresa proíbe isso, defina `CREW_OFF=1` (ou `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) ou fixe um relay próprio.

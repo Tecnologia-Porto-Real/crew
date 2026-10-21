@@ -1,6 +1,6 @@
 {
   "name": "crew",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Zero-setup coordination between your teammates' AI coding agents (Claude Code, Codex): see who is doing what, reserved files, contract changes and questions — derived from your git repo, end-to-end encrypted over public Nostr relays. No account, no server.",
   "keywords": [
     "team",

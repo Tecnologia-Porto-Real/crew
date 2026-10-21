@@ -41,14 +41,16 @@ func git(dir string, args ...string) (string, error) {
 
 // openRepo inspects the clone at dir. It returns a reason string when crew must stay off here.
 func openRepo(dir string) (*Repo, string) {
-	top, err := git(dir, "rev-parse", "--show-toplevel")
-	if err != nil || top == "" {
+	// every hook starts here, so the three answers come from one git process
+	out, err := git(dir, "rev-parse", "--show-toplevel", "--is-shallow-repository", "--path-format=absolute", "--git-common-dir")
+	lines := strings.Split(out, "\n")
+	if err != nil || len(lines) < 3 || lines[0] == "" {
 		return nil, "not a git repository"
 	}
-	if s, _ := git(top, "rev-parse", "--is-shallow-repository"); s == "true" {
+	top, common := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[2])
+	if strings.TrimSpace(lines[1]) == "true" {
 		return nil, "shallow clone (run `git fetch --unshallow` to join your team's room)"
 	}
-	common, _ := git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	root := cachedRoot(common)
 	if root == "" {
 		// walking the whole history is slow on big repos, so the answer is cached per clone for a day
@@ -60,11 +62,10 @@ func openRepo(dir string) (*Repo, string) {
 		saveRoot(common, root)
 	}
 
-	remote := pickRemote(top)
+	remote, url := pickRemote(top)
 	if remote == "" {
 		return nil, "repository has no remote"
 	}
-	url, _ := git(top, "remote", "get-url", remote)
 	host, path := parseRemote(url)
 	if path == "" {
 		return nil, "could not read the remote URL"
@@ -129,25 +130,30 @@ func oldestRoot(top string, roots []string) string {
 	return list[0].sha
 }
 
-// tracking remote of the current branch → origin → first remote
-func pickRemote(top string) string {
+// pickRemote returns the remote (and its URL): tracking remote of the current branch → origin → first remote.
+func pickRemote(top string) (string, string) {
 	if up, err := git(top, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil && strings.Contains(up, "/") {
 		r := strings.SplitN(up, "/", 2)[0]
-		if _, err := git(top, "remote", "get-url", r); err == nil {
-			return r
+		if url, err := git(top, "remote", "get-url", r); err == nil {
+			return r, url
 		}
 	}
 	list, _ := git(top, "remote")
 	remotes := strings.Fields(list)
+	pick := ""
 	for _, r := range remotes {
 		if r == "origin" {
-			return r
+			pick = r
 		}
 	}
-	if len(remotes) > 0 {
-		return remotes[0]
+	if pick == "" && len(remotes) > 0 {
+		pick = remotes[0]
 	}
-	return ""
+	if pick == "" {
+		return "", ""
+	}
+	url, _ := git(top, "remote", "get-url", pick)
+	return pick, url
 }
 
 var (

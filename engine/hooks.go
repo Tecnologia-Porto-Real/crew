@@ -173,25 +173,34 @@ func hookSessionStart(in HookIn) {
 	writeJSON(c.path("read.json"), map[string]int64{"Seq": sp.Seq})
 	c.startSession(in.SessionID)
 
-	text := c.boardBrief()
-	if len(unread) > 5 {
-		unread = unread[len(unread)-5:]
+	out := map[string]any{}
+	// context is a budget spent on every turn: with no teammate and nothing unread the model gets no text at all
+	peers := c.activePeers()
+	if len(peers) > 0 || len(unread) > 0 {
+		text := c.boardBrief(peers)
+		if len(unread) > 5 {
+			unread = unread[len(unread)-5:]
+		}
+		if len(unread) > 0 {
+			text += strings.Join(unread, "\n") + "\n"
+		}
+		if !online {
+			text += "(relays unreachable; board may be stale)\n"
+		}
+		out["hookSpecificOutput"] = map[string]any{"hookEventName": "SessionStart", "additionalContext": text}
 	}
-	if len(unread) > 0 {
-		text += strings.Join(unread, "\n") + "\n"
-	}
-	if !online {
-		text += "(relays unreachable; board may be stale)\n"
-	}
-	out := map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": text}}
 	if in.Source == "startup" || in.Source == "" {
-		out["systemMessage"] = c.humanLine()
+		out["systemMessage"] = c.humanLine(peers, online)
 	}
-	emit(out)
+	if len(out) > 0 {
+		emit(out)
+	}
 }
 
-func (c *Ctx) humanLine() string {
-	peers := c.activePeers()
+func (c *Ctx) humanLine(peers []Peer, online bool) string {
+	if !online {
+		return fmt.Sprintf("crew: you are %s in the %s room — could not reach the relays (offline or WebSockets blocked?), so the board may be stale. /crew:off turns it off here.", c.Me, c.Repo.Path)
+	}
 	if len(peers) == 0 {
 		return fmt.Sprintf("crew: you are %s in the %s room — no teammates yet; they appear when they use crew (Claude Code or Codex) in this repo. %s /crew:off turns it off here.", c.Me, c.Repo.Path, c.relayNote())
 	}
@@ -695,7 +704,7 @@ func wakeNow(c *Ctx, sid string) int {
 		// after the next turn, so the same news never notifies twice.
 		for _, it := range c.pending(sid, false) {
 			if it.Wake {
-				notify("crew: "+it.From, strings.TrimPrefix(formatItem(it), "[crew] "))
+				notify("crew: "+it.From, formatItem(it))
 				break
 			}
 		}
@@ -705,7 +714,8 @@ func wakeNow(c *Ctx, sid string) int {
 	if text == "" {
 		return 0
 	}
-	fmt.Fprintln(os.Stderr, "[crew] Team update that arrived while this session was idle (nobody typed anything; on screen the reply appears right below the previous answer, so start it with a short line like \"📨 Team update (crew)\" and keep it brief):")
+	// nobody typed anything and the human may be away: the woken turn reports, it doesn't start work
+	fmt.Fprintln(os.Stderr, "[crew] Team update that arrived while this session was idle; nobody typed anything. Start the reply with \"📨 Team update (crew)\" and tell your human in up to 3 lines. Don't edit files or run commands because of it; reply with crew_send only facts you already know — decisions go to your human:")
 	fmt.Fprintln(os.Stderr, text)
 	return 2
 }

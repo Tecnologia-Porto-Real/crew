@@ -53,20 +53,18 @@ Then, inside Codex: open `/plugins`, install **crew**, start a new session, and 
 
 ### What happens on its own
 
-| When | What you see |
-|---|---|
 crew is deliberately quiet. Research on parallel coding agents shows that declaring scope up front and
 announcing contract changes prevents conflicts, while status updates and agent-to-agent chat only cost tokens
 and time. So the agent writes at most one line per task, and the hooks do the rest.
 
 | When | What happens |
 |---|---|
-| You open a session | One line per teammate: their declared scope and reserved files. The agent declares its own scope once the task is clear. |
+| You open a session | One line per teammate: their declared scope and reserved files. The agent declares its own scope once the task is clear. With no teammate active in the last 24 h, the agent gets nothing at all (only you see a status line). |
 | The agent edits a file | That file is leased to you for 1 h (renewed while you edit). Git-ignored and generated files (lockfiles, build output, generated types) are skipped. |
 | The agent edits a file a teammate is editing | One short FYI line, at most once every 10 min. |
 | The agent touches a file a teammate **reserved exclusively** (contract files: migrations, `*.sql`, schemas, `package.json`, Dockerfile…) | Claude Code asks **you** first; Codex blocks and asks you to agree (also for shell commands that write there). |
 | You `git push` contract files | Teammates get a one-line notice, shown mid-task only to agents working on those files. |
-| A teammate asks the team or you a question while your session is idle | Claude wakes up (📨), at most 3 times per hour and 10 min apart; Codex shows a desktop notification. |
+| A teammate asks the team or you a question while your session is idle | Claude wakes up (📨) just to tell you — it doesn't start work on its own — at most 3 times per hour and 10 min apart; Codex shows a desktop notification. |
 | Anything else | Stays on the board (`crew_read`) — zero tokens until someone asks. |
 
 ### What to say to the agent
@@ -146,7 +144,7 @@ claude plugin uninstall crew@crew
   `owner/repo` name, which can be guessed. In that case run `/crew:new-key` once and commit `.claude/crew.key`.
 - **No forward secrecy:** anyone who later gets read access to the repo can decrypt messages that relays still
   keep (they are asked to delete them after 7 days, but that is up to each relay).
-- Messages are limited to 500 characters, common secret formats are redacted, `.env` content is refused, and
+- Messages are limited to 200 characters, common secret formats are redacted, `.env` content is refused, and
   incoming text is shown to Claude as information from a teammate — never as instructions.
 - Relay operators can see metadata (IP, time, approximate size, how many devices talk in a room). If your company
   forbids that, set `CREW_OFF=1` (or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), or pin your own relay.
