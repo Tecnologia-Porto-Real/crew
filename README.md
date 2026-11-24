@@ -57,14 +57,19 @@ crew is deliberately quiet. Research on parallel coding agents shows that declar
 announcing contract changes prevents conflicts, while status updates and agent-to-agent chat only cost tokens
 and time. So the agent writes at most one line per task, and the hooks do the rest.
 
+Every **session** is its own member of the room (`Ana#3f2a1c`): two sessions on your computer, or a subagent,
+each have their own scope and see each other as "your other session". A session only shows up once it has
+something to coordinate (a scope or an edit).
+
 | When | What happens |
 |---|---|
-| You open a session | One line per teammate: their declared scope and reserved files. The agent declares its own scope once the task is clear. With no teammate active in the last 24 h, the agent gets nothing at all (only you see a status line). |
-| The agent edits a file | That file is leased to you for 1 h (renewed while you edit). Git-ignored and generated files (lockfiles, build output, generated types) are skipped. |
-| The agent edits a file a teammate is editing | One short FYI line, at most once every 10 min. |
-| The agent touches a file a teammate **reserved exclusively** (contract files: migrations, `*.sql`, schemas, `package.json`, Dockerfile…) | Claude Code asks **you** first; Codex blocks and asks you to agree (also for shell commands that write there). |
-| You `git push` contract files | Teammates get a one-line notice, shown mid-task only to agents working on those files. |
-| A teammate asks the team or you a question while your session is idle | Claude wakes up (📨) just to tell you — it doesn't start work on its own — at most 3 times per hour and 10 min apart; Codex shows a desktop notification. |
+| You open a session | One line per active session of your teammates (and your own other sessions): declared scope and reserved files. The agent declares its own scope once the task is clear. With nobody else active, the agent gets nothing at all (only you see a status line). |
+| The agent edits a file | That file is leased to this session for 1 h, renewed while it edits — also a declared scope that covers the file. Git-ignored and generated files (lockfiles, build output, generated types) are skipped. |
+| The agent edits a file another session is editing | One short FYI line, at most once every 10 min; if it falls under someone's declared scope, the agent is told to check with you. |
+| The agent touches a file another session **reserved exclusively** (contract files: migrations, `*.sql`, schemas, `package.json`, Dockerfile…) | Claude Code asks **you** first; Codex blocks and asks you to agree. Also for shell commands that write there, including `npm install <pkg>`, `go get`, `cargo add` and friends, which rewrite the manifest. |
+| You `git push` contract files, or apply migrations (Supabase `apply_migration`, `supabase db push`, `prisma migrate deploy`, `drizzle-kit push/migrate`) | Teammates get a one-line notice with the files — automatically, one line per batch. Shown mid-task to sessions working on those files or next to them. |
+| A teammate asks the team or you a question | It reaches **one** of your sessions — the one working on those files, or the one you used last — never all of them. If it is idle, Claude wakes up (📨) just to tell you, at most 3 times per hour (10 min apart, 2 min for a question that names you); Codex shows a desktop notification. Questions are for you to decide: the agent only answers facts. |
+| A question waits for a decision | You (not the agent) get a reminder line, at most every 30 min, until someone answers it. `/crew:board` lists open questions. |
 | Anything else | Stays on the board (`crew_read`) — zero tokens until someone asks. |
 
 ### What to say to the agent
@@ -79,15 +84,16 @@ Usually nothing. When needed:
 
 | Command | What it does |
 |---|---|
-| `/crew:board` | Shows the team board: who is active, tasks, reserved files, recent messages |
+| `/crew:board` | Shows the team board: active sessions, scopes, reserved files, open questions, what this session sent, recent messages |
+| `/crew:name` | Sets how you appear to teammates (`git config --global crew.name`), for teams that share one git name |
 | `/crew:off` | Turns crew off for this repository on this computer |
 | `/crew:on` | Turns it back on |
 | `/crew:passphrase` | Shows the terminal command to set a team passphrase, so crew works in a **public** repository (off by default there). The passphrase is typed in your terminal, never in the chat |
 | `/crew:new-key` | Creates `.claude/crew.key` (commit it) so people who lost access to the repo stop seeing new messages |
 
-Your name comes from `git config user.name` (first word) plus 6 characters of your device key, e.g. `Ana#7f3c1a`.
-The code changes every week (device keys rotate so nobody can follow a device over time). To change the name:
-`git config user.name "Ana"`.
+Your name comes from `git config crew.name`, else `git config user.name` (first word), plus 6 characters that
+identify the session, e.g. `Ana#3f2a1c`. If `user.name` is just your organization's name (everyone committing as
+`Acme-Corp`) or a generic account, crew uses your computer's user name instead; `/crew:name Ana` fixes it for good.
 
 ## Update and uninstall
 
@@ -113,7 +119,7 @@ claude plugin uninstall crew@crew
 
 | Symptom | Likely cause and fix |
 |---|---|
-| "No teammates yet" but a teammate installed it | Both must use the same repository (`owner/repo` of the remote). A fork is a different room. A shallow clone is off — run `git fetch --unshallow`. Teammates who renamed the repo remote: `git remote set-url origin <new url>`. |
+| "No other session active" but a teammate installed it | A teammate's session appears once it declares a scope or edits a file. Both must use the same repository (`owner/repo` of the remote). A fork is a different room. A shallow clone is off — run `git fetch --unshallow`. Teammates who renamed the repo remote: `git remote set-url origin <new url>`. |
 | "off here — public repository" | Expected: in public repos anyone could read the room. A repo that was ever public stays treated as public. Use `/crew:passphrase` with a passphrase agreed outside the repo. |
 | "could not confirm that this repository is private" | On GitHub/GitLab/Bitbucket/Codeberg/Azure, crew stays off until a check confirms the repo is private (it fails closed). Usually a proxy or being offline; it retries at the next session. |
 | "Could not reach the relays" | No internet, or a firewall blocks WebSockets to public relays. Pin a relay that works for you in `.claude/crew.json` (below). |
@@ -127,10 +133,14 @@ claude plugin uninstall crew@crew
   (chosen by hash, so the whole team picks the same ones). Content is AES-256-GCM encrypted with the room key,
   padded, and signed with a per-device key. Relays see an opaque room tag, your IP and timing — never the content.
   State expires after 24 h, messages after 7 days.
-- **Claude gets it through hooks**: a summary at session start, checks before edits and shell commands, a notice on
-  `git push`, and a background watcher on idle sessions that wakes Claude only for things that matter.
+- **Claude gets it through hooks**: a summary at session start, checks before edits and shell commands, notices on
+  `git push` and applied migrations, and a background watcher on idle sessions that wakes Claude only for things
+  that matter.
 - Agent tools (any MCP-capable agent): `crew_read`, `crew_send` (scope, question, answer, notice, override) and
-  `crew_settings`. Messages are one line (200 characters max) and an agent can send at most 6 per hour.
+  `crew_settings`. Messages are one line (200 characters max). An agent can send at most 6 messages per hour, plus
+  12 answers (so news can't block a reply someone is waiting for); the error says when the next one can go.
+- **Auditable:** what crew injected into each session is logged on your machine (`crew_read` with `log`, or
+  `crew log` in a terminal), because agents' transcripts don't keep hook text.
 
 ## Privacy and security — read this
 
@@ -145,10 +155,13 @@ claude plugin uninstall crew@crew
 - **No forward secrecy:** anyone who later gets read access to the repo can decrypt messages that relays still
   keep (they are asked to delete them after 7 days, but that is up to each relay).
 - Messages are limited to 200 characters, common secret formats are redacted, `.env` content is refused, and
-  incoming text is shown to Claude as information from a teammate — never as instructions.
+  incoming text is shown to Claude as information from a teammate — never as instructions. A teammate's question
+  is shown as something for *you* to decide; the agent is told never to approve or decide on your behalf.
 - Relay operators can see metadata (IP, time, approximate size, how many devices talk in a room). If your company
   forbids that, set `CREW_OFF=1` (or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), or pin your own relay.
-  The public room tag and device keys rotate weekly, but crew traffic (event kinds 4848/34848) is recognizable as crew.
+  The public room tag and device keys rotate weekly and each session's state slot is opaque, but crew traffic
+  (event kinds 4848/34848) is recognizable as crew. Inside the encrypted content, a short hash of your git email
+  (keyed by the room) lets crew show your own other devices as "you" instead of as a teammate.
 - **Teammates can't make Claude act for them:** their text is cleaned (no tags, line breaks, control or invisible
   characters), capped, labeled as coming from a teammate, and never triggers actions; exclusive reservations only
   make Claude Code ask *you*. A reservation of the whole repository is ignored.

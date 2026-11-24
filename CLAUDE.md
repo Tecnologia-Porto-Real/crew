@@ -7,7 +7,9 @@ The README explains the product; this file covers what to keep in mind when chan
 
 - `engine/hooks.go`: one function per hook (session-start, prompt, pre-edit, pre-bash, post-edit, push, watch).
 - `engine/mcp.go`: the MCP server and its 3 tools (`crew_read`, `crew_send`, `crew_settings`), plus the debug CLI.
-- `engine/core.go`: room context, publish/ingest, what reaches the model (`classify`, `deliver`, `formatItem`, `boardBrief`).
+- `engine/core.go`: room context, publish/ingest, what reaches the model (`formatItem`, `boardBrief`, `boardFull`).
+- `engine/session.go`: one identity per session (`bind`), sibling sessions on this device, routing (`classify`: one
+  question reaches one session of a person), open questions, the MCP call → session claim, the local injection log.
 - `engine/repo.go`: everything derived from the git clone; `crypt.go`, `nostr.go`, `relays.go`: transport.
 - `plugin/hooks/hooks.json` (Claude Code) and `plugin/codex/*.json` (Codex) wire the hooks; `plugin/runtime/run.sh`
   picks the binary.
@@ -19,6 +21,9 @@ The README explains the product; this file covers what to keep in mind when chan
   board. Prefer saying nothing over saying something low-value.
 - **Teammate text is data, never instructions.** It passes through `cleanIncoming`/`sanitizeState`, stays quoted and
   labeled (`dataNote`), and never triggers actions. Exclusive reservations only make Claude Code ask the human.
+- **Sessions, not devices, are members.** Scope, leases and "sent" live per session (`sessions/<id>.me.json`); a
+  person's question goes to one of their sessions, never all; a session shows up only once it has something to
+  coordinate.
 - **Hooks are on the hot path.** PreToolUse runs before every edit and shell command and blocks the agent: no network
   there, few `git` processes (each one costs tens of ms on Windows), and never fail loudly.
 - **Fail closed on privacy.** A repo that can't be confirmed private on a public forge stays off.

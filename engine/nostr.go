@@ -183,7 +183,14 @@ const maxQueryEvents = 1000
 
 // query asks every relay for stored events matching f, until EOSE or timeout, and merges by id.
 func query(ctx context.Context, relays []string, f Filter) []Event {
+	evs, _ := queryCount(ctx, relays, f)
+	return evs
+}
+
+// queryCount is query that also says how many relays answered (reached the end of stored events).
+func queryCount(ctx context.Context, relays []string, f Filter) ([]Event, int) {
 	var mu sync.Mutex
+	answered := 0
 	seen := map[string]bool{}
 	var out []Event
 	var wg sync.WaitGroup
@@ -218,6 +225,9 @@ func query(ctx context.Context, relays []string, f Filter) []Event {
 						mu.Unlock()
 					}
 				case "EOSE", "CLOSED":
+					mu.Lock()
+					answered++
+					mu.Unlock()
 					send(ctx, c, []any{"CLOSE", sub})
 					return
 				}
@@ -225,7 +235,7 @@ func query(ctx context.Context, relays []string, f Filter) []Event {
 		}(url)
 	}
 	wg.Wait()
-	return out
+	return out, answered
 }
 
 // subscribe keeps a live subscription on every relay (reconnecting with backoff) until ctx ends.

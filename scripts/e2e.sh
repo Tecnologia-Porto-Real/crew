@@ -27,13 +27,17 @@ echo "alice: $ra"; echo "bob:   $rb"
 [ "$(echo "$ra" | sed 's/.*room=\([0-9a-f]*\).*/\1/')" = "$(echo "$rb" | sed 's/.*room=\([0-9a-f]*\).*/\1/')" ] && ok "both clones derive the same room with zero setup" || ko "same room" "$ra / $rb"
 
 out=$(hookA session-start "{\"session_id\":\"a1\",\"cwd\":\"$B_/alice\",\"source\":\"startup\"}")
-check "first teammate sees an empty room" "$out" "no teammates yet"
+check "first teammate sees an empty room" "$out" "no other session active"
 if echo "$out" | grep -q additionalContext; then ko "a solo session costs the model no tokens" "$out"; else ok "a solo session costs the model no tokens"; fi
 
+out=$(hookB session-start "{\"session_id\":\"b0\",\"cwd\":\"$B_/bob\",\"source\":\"startup\"}")
+if echo "$out" | grep -q "Alice#"; then ko "a session with nothing to coordinate stays out of the room" "$out"; else ok "a session with nothing to coordinate stays out of the room"; fi
+hookB session-end '{"session_id":"b0","cwd":"'"$B_"'/bob"}' >/dev/null
+
+A send scope "Refactor the login flow" --files "db/migrations/**,src/auth,package.json" >/dev/null
 out=$(hookB session-start "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"source\":\"startup\"}")
 check "second teammate sees the first one, no setup" "$out" "Alice#"
-
-A send scope "Refactor the login flow" --files "db/migrations/**,src/auth" >/dev/null
+check "with a teammate active, the agent is asked for a scope and shown the tool's shape" "$out" "crew_send {type"
 out=$(B board)
 check "board shows the teammate's declared scope" "$out" "Refactor the login flow"
 check "a scope on contract files becomes an exclusive reservation" "$out" "db/migrations/\*\* (exclusive)"
@@ -44,7 +48,7 @@ check "editing a file reserved exclusively asks the human first" "$out" '"permis
 out=$(hookB pre-edit "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$B_/bob/src/app.ts\"}}")
 if echo "$out" | grep -q permissionDecision; then ko "normal file is not blocked" "$out"; else ok "normal file is not blocked"; fi
 hookB pre-edit "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$B_/bob/node_modules/.cache/tmp.sql\"}}" >/dev/null
-me=$(cat "$base"/data-bob/repos/*/rooms/*/me.json)
+me=$(cat "$base"/data-bob/repos/*/rooms/*/sessions/b1.me.json)
 if echo "$me" | grep -q node_modules; then ko "git-ignored files are never reserved" "$me"; else ok "git-ignored files are never reserved"; fi
 check "an edit becomes a lease of the edited file" "$me" "src/app.ts"
 
@@ -54,6 +58,16 @@ out=$(hookB pre-bash "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\
 check "a migration generator command asks the human" "$out" '"permissionDecision":"ask"'
 out=$(hookB pre-bash "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls db/migrations && cat db/migrations/001.sql\"}}")
 if echo "$out" | grep -q permissionDecision; then ko "reading a reserved folder is free" "$out"; else ok "reading a reserved folder is free"; fi
+out=$(hookB pre-bash "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm install lodash\"}}")
+check "adding a dependency asks when a teammate reserved package.json" "$out" '"permissionDecision":"ask"'
+out=$(hookB pre-bash "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"npm install\"}}")
+if echo "$out" | grep -q permissionDecision; then ko "a bare install is free" "$out"; else ok "a bare install (no manifest change) is free"; fi
+
+# two sessions of Bob on one machine see each other, with their own scopes
+hookB session-start "{\"session_id\":\"b9\",\"cwd\":\"$B_/bob\",\"source\":\"startup\"}" >/dev/null
+out=$(hookB pre-edit "{\"session_id\":\"b9\",\"cwd\":\"$B_/bob\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$B_/bob/src/app.ts\"}}")
+check "a second session on the same machine sees the first one's edit" "$out" "your other session"
+hookB session-end '{"session_id":"b9","cwd":"'"$B_"'/bob"}' >/dev/null
 
 # Bob's session goes idle: the Stop hook waits for the team
 errf="$base/watch.err"
@@ -74,13 +88,16 @@ check "the wake text is framed as information, not instructions" "$(cat "$errf")
 
 out=$(hookB prompt "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\"}")
 if echo "$out" | grep -q "rename users.email"; then ko "delivered once per session" "$out"; else ok "a message is delivered once per session"; fi
+check "a question nobody answered is kept in front of the human" "$out" "wait for a human decision"
 
-# a second open session of Bob gets its own copy
+# a question for the team reaches the session Bob used last, once — not every open session
 hookB session-start "{\"session_id\":\"b2\",\"cwd\":\"$B_/bob\",\"source\":\"startup\"}" >/dev/null
 A send question "Who reviews the login refactor?" >/dev/null
 sleep 4
 out=$(B board >/dev/null; hookB prompt "{\"session_id\":\"b2\",\"cwd\":\"$B_/bob\"}")
-check "every open session receives new messages" "$out" "Who reviews the login refactor"
+check "a team question reaches the session used last" "$out" "Who reviews the login refactor"
+out=$(hookB prompt "{\"session_id\":\"b1\",\"cwd\":\"$B_/bob\"}")
+if echo "$out" | grep -q "Who reviews"; then ko "one person sees a question once" "$out"; else ok "the same person doesn't get it again in another session"; fi
 
 # ---- Codex mode (same engine, Codex hook semantics) ----
 hookBc() { echo "$2" | (cd "$base/bob" && CREW_DATA="$base/data-bob" CREW_NO_NOTIFY=1 "$BIN" hook "$1" --agent codex); }
@@ -112,6 +129,14 @@ check "messages longer than 200 characters are refused" "$out" "limit is 200"
 lim=""
 for i in 1 2 3 4 5 6; do r=$(A send question "q$i" 2>&1); case "$r" in *"limit of 6"*) lim=yes; break;; esac; done
 [ -n "$lim" ] && ok "an agent can send at most 6 messages per hour" || ko "agent message budget" "$r"
+check "the limit says when the next message can go" "$r" "next one can go in"
+out=$(B send answer "Alice reviews it" --to "Alice" 2>&1; A send answer "yes, after Friday" --to "Bob" 2>&1)
+check "answers have their own budget, so news can't block a reply" "$out" "Sent."
+
+# applying a migration is announced by crew itself
+hookA post-migrate '{"session_id":"a1","cwd":"'"$B_"'/alice","tool_name":"mcp__supabase__apply_migration","tool_input":{"name":"add_login_tokens","query":"select 1"}}'
+sleep 3
+check "an applied migration is announced to the team automatically" "$(B board)" "applied migration add_login_tokens"
 
 out=$(cd "$base" && git init -q pub && cd pub && git -c user.name=P -c user.email=p@x commit -q --allow-empty -m x && git remote add origin https://github.com/git/git.git && CREW_DATA="$base/data-alice" "$BIN" hook session-start <<<"{\"session_id\":\"p\",\"cwd\":\"$B_/pub\",\"source\":\"startup\"}")
 check "public repositories stay off by default" "$out" "public repository"

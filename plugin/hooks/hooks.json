@@ -93,6 +93,24 @@
             "if": "Bash(git push*)"
           }
         ]
+      },
+      {
+        "matcher": "mcp__plugin_crew_crew__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "mcp-claim"
+            ],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -131,6 +149,44 @@
             ],
             "timeout": 20,
             "if": "Bash(git push*)"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "post-bash"
+            ],
+            "timeout": 20,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*apply_migration",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git",
+            "args": [
+              "-c",
+              "alias.crew-run=!sh",
+              "crew-run",
+              "${CLAUDE_PLUGIN_ROOT}/runtime/run.sh",
+              "hook",
+              "post-migrate"
+            ],
+            "timeout": 20,
+            "async": true
           }
         ]
       }

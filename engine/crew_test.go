@@ -263,3 +263,197 @@ func TestOpenRepo(t *testing.T) {
 		t.Fatalf("outside a repo: %v %q", r, why)
 	}
 }
+
+func testCtx(t *testing.T, name string) *Ctx {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("CREW_DATA", dir)
+	r := &Repo{Root: "r", Path: "org/app", Top: dir}
+	c := &Ctx{Repo: r, Room: deriveRoom(r, nil), Dir: dir, Name: name}
+	c.Keys = keysFromSeed(hk([]byte(name), "s", "i", 32))
+	c.MyPubs = map[string]bool{c.Keys.Pub: true}
+	c.bind("", "")
+	return c
+}
+
+func TestSessionsHaveTheirOwnScope(t *testing.T) {
+	c := testCtx(t, "ana")
+	c.bind("s1", "")
+	c.startSession("s1")
+	c.updateMe(func(m *Me) { m.Task = "login refactor" })
+	tag1 := c.SessTag
+	c.bind("s2", "")
+	c.startSession("s2")
+	if c.SessTag == tag1 || c.loadMe().Task != "" {
+		t.Fatal("a second session must start with its own empty scope")
+	}
+	c.updateMe(func(m *Me) { m.Task = "payments" })
+	sib := c.localSiblings()
+	if len(sib) != 1 || sib[0].State.Task != "login refactor" || !strings.Contains(c.label(sib[0]), "your other session") {
+		t.Fatalf("the other session must show up as a sibling with its own scope: %+v", sib)
+	}
+	c.bind("s2", "sub1")
+	c.updateMe(func(m *Me) { m.Task = "subagent work" })
+	c.bind("s2", "")
+	if c.loadMe().Task != "payments" {
+		t.Fatal("a subagent must not overwrite its session's scope")
+	}
+	for _, p := range c.localSiblings() {
+		if p.State.Task == "subagent work" {
+			t.Fatal("a session's own subagent is not a sibling")
+		}
+	}
+	c.bind("s1", "")
+	if n := len(c.localSiblings()); n != 2 {
+		t.Fatalf("s1 sees s2 and s2's subagent, got %d", n)
+	}
+}
+
+func TestRoutingPerSession(t *testing.T) {
+	c := testCtx(t, "ana")
+	c.bind("s1", "")
+	c.startSession("s1")
+	c.updateMe(func(m *Me) { m.Touched = []Touch{{Path: "db/migrations/001.sql", At: time.Now().Unix()}} })
+	time.Sleep(20 * time.Millisecond)
+	c.bind("s2", "")
+	c.startSession("s2") // s2 is now the session the human used last
+	tag2 := c.SessTag
+	other := "bob#abcdef"
+	cases := []struct {
+		it             Item
+		sess           string
+		relevant, wake bool
+	}{
+		{Item{Type: "question", From: other, To: "ana"}, "s2", true, true},                                        // person → primary
+		{Item{Type: "question", From: other, To: "ana"}, "s1", false, false},                                      // …not every session
+		{Item{Type: "question", From: other, To: "ana#" + tag2}, "s2", true, true},                                // session
+		{Item{Type: "question", From: other}, "s1", false, false},                                                 // team, no files → primary only
+		{Item{Type: "question", From: other, Files: []string{"db/migrations/**"}}, "s1", true, true},              // team, my files
+		{Item{Type: "notice", From: other, Files: []string{"db/migrations/002.sql"}}, "s1", true, true},           // contract on my files
+		{Item{Type: "notice", From: other}, "s2", true, false},                                                    // team-wide news: no wake
+		{Item{Type: "question", From: "ana#123456", FromPub: c.Keys.Pub, FromSess: "123456"}, "s2", false, false}, // my other session
+		{Item{Type: "push", From: "ana#123456", FromPub: c.Keys.Pub, FromSess: "123456", Files: []string{"db/migrations/9.sql"}}, "s1", true, true},
+	}
+	for i, k := range cases {
+		c.bind(k.sess, "")
+		if rel, wake := c.classify(k.it, c.view()); rel != k.relevant || wake != k.wake {
+			t.Errorf("case %d (%s): relevant=%v wake=%v, want %v %v", i, k.sess, rel, wake, k.relevant, k.wake)
+		}
+	}
+}
+
+func TestOpenQuestions(t *testing.T) {
+	c := testCtx(t, "ana")
+	c.bind("s1", "")
+	now := time.Now().Unix()
+	c.saveSpool(Spool{Seq: 2, IDs: map[string]bool{}, Items: []Item{
+		{Seq: 1, ID: "a", Type: "question", From: "bob#abcdef", To: "ana", Text: "drop the old table?", At: now - 60},
+		{Seq: 2, ID: "b", Type: "question", From: "eve#123456", To: "carl", Text: "not for me", At: now - 60},
+	}})
+	if q := c.openQuestions(); len(q) != 1 || q[0].ID != "a" {
+		t.Fatalf("one open question for ana: %+v", q)
+	}
+	c.recordSent("answer", "yes after Friday", "bob#abcdef")
+	if q := c.openQuestions(); len(q) != 0 {
+		t.Fatalf("an answered question is no longer open: %+v", q)
+	}
+}
+
+func TestLeaseRenewsCoveringScope(t *testing.T) {
+	c := testCtx(t, "ana")
+	c.bind("s1", "")
+	old := time.Now().Add(10 * time.Minute).Unix()
+	c.updateMe(func(m *Me) { m.Reservations = []Reservation{{Path: "src/auth", Until: old, Reason: "login"}} })
+	c.lease("src/auth/login.ts", false)
+	me := c.loadMe()
+	if len(me.Reservations) != 1 || me.Reservations[0].Until <= old {
+		t.Fatalf("editing inside a declared scope must renew it, not add a lease: %+v", me.Reservations)
+	}
+}
+
+func TestDependencyCommands(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"npm install lodash": true, "npm i -D vitest": true, "pnpm add zod": true, "yarn add react": true,
+		"go get example.com/x": true, "cargo add serde": true, "poetry add httpx": true,
+		"npm install": false, "npm install && npm test": false, "npm ci": false, "pip install -r requirements.txt": false,
+	} {
+		if reDepCmd.MatchString(cmd) != want {
+			t.Errorf("%q → %v", cmd, !want)
+		}
+	}
+	for cmd, want := range map[string]bool{
+		"npx supabase db push": true, "npx prisma migrate deploy": true, "npx prisma migrate dev": false, "supabase start": false,
+	} {
+		if (reApplyCmd.FindString(cmd) != "") != want {
+			t.Errorf("apply %q → %v", cmd, !want)
+		}
+	}
+}
+
+func TestParseArgsTolerant(t *testing.T) {
+	a := parseArgs(json.RawMessage(`{"kind":"fyi","message":"prod db is down","path":"a.sql,b.sql"}`))
+	if a.Type != "notice" || a.Text != "prod db is down" || len(a.Files) != 2 {
+		t.Fatalf("guessed field names must work: %+v", a)
+	}
+}
+
+func TestClaimMatchesTheSameCall(t *testing.T) {
+	t.Setenv("CREW_DATA", t.TempDir())
+	saveClaim("mcp__plugin_crew_crew__crew_send", json.RawMessage(`{"type": "scope", "text": "x", "files": ["a"]}`), claim{Sid: "s9", Cwd: "/r"})
+	cl, ok := findClaim("crew_send", json.RawMessage(`{"files":["a"],"text":"x","type":"scope"}`))
+	if !ok || cl.Sid != "s9" {
+		t.Fatal("the MCP call must find the session the hook saw")
+	}
+	if _, ok := findClaim("crew_send", json.RawMessage(`{"type":"scope","text":"y"}`)); ok {
+		t.Fatal("another call must not match")
+	}
+}
+
+func TestDisplayNameSkipsTheOrgName(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", t.TempDir()) // no global crew.name from the machine running the tests
+	t.Setenv("GIT_AUTHOR_NAME", "")
+	git(dir, "init", "-q")
+	git(dir, "config", "user.name", "Tecnologia-Porto-Real")
+	git(dir, "config", "user.email", "marcelo@example.com")
+	r := &Repo{Top: dir, Path: "tecnologia-porto-real/app"}
+	if n, _ := displayName(r, gitIdentity(dir)); strings.EqualFold(n, "Tecnologia-Porto-Real") {
+		t.Fatalf("the organization's name can't tell people apart: %q", n)
+	}
+	git(dir, "config", "crew.name", "Marcelo")
+	if n, named := displayName(r, gitIdentity(dir)); n != "Marcelo" || !named {
+		t.Fatalf("crew.name wins: %q", n)
+	}
+}
+
+func TestBoardDatesOldItemsAndHidesOwnSession(t *testing.T) {
+	c := testCtx(t, "ana")
+	c.bind("s1", "")
+	old := time.Now().Add(-50 * time.Hour).Unix()
+	c.saveSpool(Spool{Seq: 2, IDs: map[string]bool{}, Items: []Item{
+		{Seq: 2, ID: "n", Type: "notice", From: "bob#abcdef", Text: "newer", At: time.Now().Unix()},
+		{Seq: 1, ID: "o", Type: "push", From: "bob#abcdef", Text: "pushed a.sql to origin/main", At: old},
+		{Seq: 3, ID: "m", Type: "notice", From: c.Me, FromPub: c.Keys.Pub, FromSess: c.SessTag, Text: "mine", At: old},
+	}})
+	b := c.boardFull()
+	if !strings.Contains(b, time.Unix(old, 0).Format("Jan 2")) || strings.Index(b, "a.sql") > strings.Index(b, "newer") {
+		t.Fatalf("old items are dated and listed oldest first:\n%s", b)
+	}
+	if strings.Contains(b, `"mine"`) || strings.Contains(b, `pushed: "pushed`) {
+		t.Fatalf("own messages stay out of the room list, and push lines don't repeat themselves:\n%s", b)
+	}
+}
+
+func TestSharedGitAccountDoesNotHideATeammate(t *testing.T) {
+	c := testCtx(t, "marcelo")
+	c.Who = "abcd1234"
+	c.bind("s1", "")
+	c.startSession("s1")
+	q := Item{Type: "question", From: "laerte#aaaaaa", FromPub: "otherdevice", FromWho: "abcd1234", To: "marcelo"}
+	if rel, wake := c.classify(q, c.view()); !rel || !wake {
+		t.Fatal("a question from another device must get through even if the person hash matches")
+	}
+	if !strings.Contains(c.formatItem(q), "you, on another device") {
+		t.Fatal("…it is only labeled")
+	}
+}

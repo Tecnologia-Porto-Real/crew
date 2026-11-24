@@ -46,6 +46,17 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__crew__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook mcp-claim --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook mcp-claim --agent codex",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -69,6 +80,18 @@
             "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-push --agent codex",
             "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-push --agent codex",
             "timeout": 20
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*apply_migration",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git -c 'alias.crew-run=!sh' crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-migrate --agent codex",
+            "commandWindows": "git -c alias.crew-run=!sh crew-run \"${CLAUDE_PLUGIN_ROOT}/runtime/run.sh\" hook post-migrate --agent codex",
+            "timeout": 20,
+            "async": true
           }
         ]
       }

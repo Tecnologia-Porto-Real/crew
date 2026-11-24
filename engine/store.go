@@ -112,6 +112,8 @@ type Envelope struct {
 	V     int      `json:"v"`
 	Type  string   `json:"type"` // state | notice | question | note | done | push
 	Name  string   `json:"name"`
+	Sess  string   `json:"sess,omitempty"` // sending session (one device runs many); empty = crew < 0.5
+	Who   string   `json:"who,omitempty"`  // the person (hash of the git email, keyed by the room), to spot "you elsewhere"
 	Ts    int64    `json:"ts"`
 	To    string   `json:"to,omitempty"`
 	Text  string   `json:"text,omitempty"`
@@ -121,22 +123,26 @@ type Envelope struct {
 
 type Peer struct {
 	Pub   string `json:"pub"`
+	Sess  string `json:"sess,omitempty"`
+	Who   string `json:"who,omitempty"`
 	Name  string `json:"name"`
 	At    int64  `json:"at"` // created_at of the latest state
 	State State  `json:"state"`
+	Local bool   `json:"-"` // another session on this device, read from disk
 }
 
 type Item struct {
 	Seq      int64    `json:"seq"`
 	ID       string   `json:"id"`
 	Type     string   `json:"type"`
-	From     string   `json:"from"` // Name#fp
+	From     string   `json:"from"` // Name#id
+	FromPub  string   `json:"fromPub,omitempty"`
+	FromSess string   `json:"fromSess,omitempty"`
+	FromWho  string   `json:"fromWho,omitempty"`
 	To       string   `json:"to,omitempty"`
 	Text     string   `json:"text"`
 	Files    []string `json:"files,omitempty"`
 	At       int64    `json:"at"`
-	Wake     bool     `json:"wake,omitempty"`     // worth waking an idle session
-	Relevant bool     `json:"relevant,omitempty"` // worth showing mid-task (else only on the board)
 }
 
 type Spool struct {
@@ -146,13 +152,31 @@ type Spool struct {
 	Since int64           `json:"since"` // newest created_at ingested
 }
 
+// Me is one session's own state: its scope, the files it touched and its leases. Every session (and every
+// subagent) has its own, so parallel sessions on one machine no longer overwrite each other's scope.
 type Me struct {
+	Sid           string        `json:"sid,omitempty"`   // the session it belongs to (a subagent's is its parent's)
+	Sess          string        `json:"sess,omitempty"`  // its id in the room
+	Agent         string        `json:"agent,omitempty"` // set for a subagent
 	Task          string        `json:"task,omitempty"`
+	TaskAt        int64         `json:"taskAt,omitempty"`
 	Touched       []Touch       `json:"touched,omitempty"`
 	Reservations  []Reservation `json:"reservations,omitempty"`
+	Sent          []Sent        `json:"sent,omitempty"` // what this session sent, for the board
 	LastPublished int64         `json:"lastPublished"`
-	LastFetch     int64         `json:"lastFetch"`
 	Dirty         bool          `json:"dirty"`
+}
+
+type Sent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+	To   string `json:"to,omitempty"`
+	At   int64  `json:"at"`
+}
+
+// hasState: a session only shows up in the room once it has something to coordinate (a scope or an edit).
+func (m Me) hasState() bool {
+	return m.Task != "" || len(m.Touched) > 0 || len(liveReservations(m.Reservations)) > 0
 }
 
 type Session struct {
@@ -191,33 +215,41 @@ func (c *Ctx) saveSpool(s Spool) {
 	writeJSON(c.path("spool.json"), s)
 }
 
+func (c *Ctx) mePath() string {
+	return strings.TrimSuffix(sessionFile(c, c.SessKey), ".json") + ".me.json"
+}
+
 func (c *Ctx) loadMe() Me {
 	var m Me
-	readJSON(c.path("me.json"), &m)
+	readJSON(c.mePath(), &m)
 	return m
 }
 
 func (c *Ctx) updateMe(fn func(*Me)) Me {
 	var m Me
-	if err := withLock(c.path("me.lock"), func() error {
+	if err := withLock(c.mePath()+".lock", func() error {
 		m = c.loadMe()
 		fn(&m)
-		return writeJSON(c.path("me.json"), m)
+		m.Sid, m.Sess, m.Agent = c.Sid, c.SessTag, c.Agent
+		return writeJSON(c.mePath(), m)
 	}); err != nil {
 		return c.loadMe() // couldn't lock: keep what is on disk, never publish an empty state
 	}
 	return m
 }
 
-func sessionFile(c *Ctx, sid string) string {
+func cleanSid(sid string) string {
 	if sid == "" {
 		sid = "none"
 	}
-	clean := strings.Map(func(r rune) rune {
+	return strings.Map(func(r rune) rune {
 		if r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
 			return r
 		}
 		return '_'
 	}, sid)
-	return c.path(filepath.Join("sessions", clean+".json"))
+}
+
+func sessionFile(c *Ctx, sid string) string {
+	return c.path(filepath.Join("sessions", cleanSid(sid)+".json"))
 }

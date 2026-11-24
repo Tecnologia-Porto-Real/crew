@@ -177,22 +177,54 @@ func parseRemote(u string) (string, string) {
 	return strings.ToLower(host), strings.ToLower(p)
 }
 
-// displayName: git user.name → GIT_AUTHOR_NAME → OS user.
-func displayName(top string) string {
-	if n, _ := git(top, "config", "user.name"); n != "" {
-		return firstWord(n)
+// gitIdentity reads crew.name, user.name and user.email with one git process (this runs in every hook).
+func gitIdentity(top string) map[string]string {
+	m := map[string]string{}
+	out, _ := git(top, "config", "--get-regexp", `^(crew\.name|user\.name|user\.email)$`)
+	for _, l := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(l), " "); ok {
+			m[strings.ToLower(k)] = strings.TrimSpace(v)
+		}
 	}
-	if n := os.Getenv("GIT_AUTHOR_NAME"); n != "" {
-		return firstWord(n)
+	return m
+}
+
+var genericNames = map[string]bool{"user": true, "usuario": true, "usuário": true, "admin": true, "administrator": true,
+	"administrador": true, "owner": true, "root": true, "dev": true, "pc": true}
+
+// displayName: crew.name → git user.name → OS user. A user.name that is just the organization (everyone on
+// the team committing as "Acme-Corp") or a generic account name can't tell people apart, so it is skipped.
+// The second result says whether the name tells this person apart (crew.name or a real user.name).
+func displayName(r *Repo, id map[string]string) (string, bool) {
+	if n := firstWord(id["crew.name"]); n != "" {
+		return n, true
 	}
-	if u, err := user.Current(); err == nil && u.Username != "" {
+	owner := strings.ToLower(strings.SplitN(r.Path, "/", 2)[0])
+	usable := func(n string) bool {
+		l := strings.ToLower(n)
+		return n != "" && !genericNames[l] && l != owner && strings.ReplaceAll(l, " ", "-") != owner
+	}
+	if n := strings.TrimSpace(id["user.name"]); usable(n) {
+		return firstWord(n), true
+	}
+	if n := os.Getenv("GIT_AUTHOR_NAME"); usable(n) {
+		return firstWord(n), true
+	}
+	if u, err := user.Current(); err == nil {
 		n := u.Username
 		if i := strings.LastIndexAny(n, `\/`); i >= 0 {
 			n = n[i+1:]
 		}
-		return firstWord(n)
+		if usable(n) {
+			return firstWord(n), false
+		}
 	}
-	return "dev"
+	if e := id["user.email"]; e != "" {
+		if local, domain, _ := strings.Cut(e, "@"); usable(local) && !strings.Contains(domain, "noreply") {
+			return firstWord(local), false
+		}
+	}
+	return "dev", false
 }
 
 func firstWord(s string) string {
@@ -206,10 +238,7 @@ func firstWord(s string) string {
 	return s
 }
 
-func myEmail(top string) string {
-	e, _ := git(top, "config", "user.email")
-	return e
-}
+func myEmail(top string) string { return gitIdentity(top)["user.email"] }
 
 // Well-known public forges: there, an inconclusive visibility check keeps crew off (fail closed).
 var publicForges = map[string]bool{"github.com": true, "gitlab.com": true, "bitbucket.org": true, "codeberg.org": true, "dev.azure.com": true}
