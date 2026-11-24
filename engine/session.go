@@ -23,9 +23,25 @@ func (c *Ctx) bind(sid, agentID string) {
 	if agentID != "" {
 		c.SessKey += "." + agentID
 	}
-	h := sha256.Sum256([]byte("crew-sess|" + c.Keys.Pub + "|" + c.SessKey))
-	c.SessTag = hex.EncodeToString(h[:3])
+	c.SessTag = c.tagOf(c.SessKey)
+	c.ParentTag = c.tagOf(cleanSid(sid)) // a subagent also answers for its session
 	c.Me = c.Name + "#" + c.SessTag
+}
+
+func (c *Ctx) tagOf(key string) string {
+	h := sha256.Sum256([]byte("crew-sess|" + c.Keys.Pub + "|" + key))
+	return hex.EncodeToString(h[:3])
+}
+
+// own: the item was sent by this session (or, in a subagent, by its session).
+func (c *Ctx) own(it Item) bool {
+	return c.MyPubs[it.FromPub] && (it.FromSess == c.SessTag || it.FromSess == c.ParentTag)
+}
+
+// activeFile records when the human last used a session. It is separate from the session file, which other
+// hooks rewrite (pending, startSession) and would make the wrong session look recent.
+func (c *Ctx) activeFile(name string) string {
+	return c.path(filepath.Join("sessions", name+".active"))
 }
 
 // openSessions lists the open sessions of this device in this room, most recently active first.
@@ -42,7 +58,11 @@ func (c *Ctx) openSessions() []string {
 			continue
 		}
 		if inf, err := e.Info(); err == nil && time.Since(inf.ModTime()) < 72*time.Hour {
-			l = append(l, st{strings.TrimSuffix(n, ".json"), inf.ModTime()})
+			name, t := strings.TrimSuffix(n, ".json"), time.Time{}
+			if a, err := os.Stat(c.activeFile(name)); err == nil {
+				t = a.ModTime()
+			}
+			l = append(l, st{name, t})
 		}
 	}
 	sort.Slice(l, func(i, j int) bool { return l[i].t.After(l[j].t) })
@@ -62,8 +82,7 @@ func (c *Ctx) primary() bool {
 
 // touchSession records activity (a prompt, a tool call) so routing knows which session the human is in.
 func (c *Ctx) touchSession() {
-	now := time.Now()
-	os.Chtimes(sessionFile(c, c.Sid), now, now)
+	os.WriteFile(c.activeFile(cleanSid(c.Sid)), nil, 0o600)
 }
 
 // localSiblings: the other sessions (and subagents) of this device, read straight from disk — instant and
@@ -163,7 +182,7 @@ func (c *Ctx) addressed(to string) int {
 	switch {
 	case t == "":
 		return 0
-	case t == strings.ToLower(c.Me) || strings.HasSuffix(t, "#"+c.SessTag):
+	case t == strings.ToLower(c.Me) || strings.HasSuffix(t, "#"+c.SessTag) || strings.HasSuffix(t, "#"+c.ParentTag):
 		return 2
 	case t == strings.ToLower(c.Name) || strings.HasSuffix(t, "#"+fp(c.Keys.Pub)) || strings.TrimPrefix(t, "@") == strings.ToLower(c.Name):
 		return 1
@@ -180,6 +199,11 @@ type view struct {
 
 func (c *Ctx) view() view {
 	v := view{mine: filesOf(c.loadMe()), primary: c.primary(), routed: map[string]string{}}
+	if c.Agent != "" { // a subagent consumes its session's deliveries, so it judges them by the session's files too
+		var parent Me
+		readJSON(strings.TrimSuffix(sessionFile(c, c.Sid), ".json")+".me.json", &parent)
+		v.mine = append(v.mine, filesOf(parent)...)
+	}
 	readJSON(c.path("routed.json"), &v.routed)
 	return v
 }
@@ -237,7 +261,7 @@ func (c *Ctx) overlaps(files, mine []string) bool {
 // classify decides whether an item reaches this session mid-task (relevant) and whether it is worth a full
 // model turn on an idle session (wake). Only things that change what this session should do qualify.
 func (c *Ctx) classify(it Item, v view) (relevant, wake bool) {
-	if c.MyPubs[it.FromPub] && it.FromSess == c.SessTag {
+	if c.own(it) {
 		return false, false // my own message
 	}
 	if (it.Type == "question" || it.Type == "answer") && c.mine(it) && c.addressed(it.To) < 2 {

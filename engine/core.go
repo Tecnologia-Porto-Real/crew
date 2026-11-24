@@ -31,6 +31,7 @@ type Ctx struct {
 	Pinned  bool // relays come from the repo's .claude/crew.json
 
 	Sid, Agent, SessKey, SessTag string // the session (and subagent) this context speaks for
+	ParentTag                    string // the session's own tag (= SessTag outside a subagent)
 
 	answered int // relays that answered the last fetch (one slow relay doesn't make crew "offline")
 }
@@ -250,10 +251,9 @@ func (c *Ctx) retireLegacyState(ctx context.Context) {
 	if _, err := os.Stat(flag); err == nil {
 		return
 	}
-	sess := c.SessTag
-	c.SessTag = "" // a device-level state, like the one it replaces
-	defer func() { c.SessTag = sess }()
-	ev, err := c.event(kindState, Envelope{Type: "state", State: &State{Status: "left"}}, time.Hour, []string{"d", c.Room.tagFor(time.Now())})
+	dev := *c
+	dev.SessTag = "" // a device-level state, like the one it replaces (a copy: hooks read c concurrently)
+	ev, err := dev.event(kindState, Envelope{Type: "state", State: &State{Status: "left"}}, time.Hour, []string{"d", c.Room.tagFor(time.Now())})
 	if err != nil {
 		return
 	}
@@ -608,7 +608,9 @@ func prunePeers(m map[string]Peer) map[string]Peer {
 		if i == 50 {
 			break
 		}
-		out[p.Pub+"/"+p.Sess] = p
+		if _, ok := out[p.Pub+"/"+p.Sess]; !ok { // newest first: an older entry under the same key loses
+			out[p.Pub+"/"+p.Sess] = p
+		}
 	}
 	return out
 }
@@ -617,7 +619,7 @@ func reasonSuffix(r string) string {
 	if r == "" {
 		return ""
 	}
-	return ` — "` + cleanIncoming(r, 120) + `"`
+	return " — " + strconv.Quote(cleanIncoming(r, 120)) // escaped: a teammate's quote can't end it
 }
 
 func hadReservation(s State, p string) bool {
@@ -697,6 +699,8 @@ func timeLabel(at int64) string {
 
 func formatItem(it Item) string { return (&Ctx{}).formatItem(it) }
 
+var reHandle = regexp.MustCompile(`^@?[\p{L}\p{N}._-]{1,24}(#[0-9a-f]{1,16})?$`)
+
 func (c *Ctx) formatItem(it Item) string {
 	from := it.From
 	switch {
@@ -716,7 +720,10 @@ func (c *Ctx) formatItem(it Item) string {
 	case "question", "answer":
 		target := "the team"
 		if it.To != "" {
-			target = it.To
+			target = "someone" // a teammate's free text never reaches the model outside quotes
+			if reHandle.MatchString(it.To) {
+				target = it.To
+			}
 			if c.Keys.Pub != "" && c.addressed(it.To) > 0 {
 				target = "you"
 			}
@@ -859,7 +866,7 @@ func (c *Ctx) boardFull() string {
 	}
 	var items []Item
 	for _, it := range c.loadSpool().Items {
-		if !(c.MyPubs[it.FromPub] && it.FromSess == c.SessTag) {
+		if !c.own(it) {
 			items = append(items, it)
 		}
 	}

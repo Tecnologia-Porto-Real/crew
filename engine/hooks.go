@@ -188,6 +188,7 @@ func hookSessionStart(in HookIn) {
 	}
 
 	c.startSession(in.SessionID) // after the fetch: what it just brought is shown here, not again at the first prompt
+	c.touchSession()             // the human just opened it
 
 	// unread = arrived since any session of this device last saw the room
 	var read struct{ Seq int64 }
@@ -198,7 +199,7 @@ func hookSessionStart(in HookIn) {
 	var routed []Item
 	// before new work starts, every contract change counts; questions and answers only if they are for us
 	for _, it := range sp.Items {
-		if it.Seq <= read.Seq || c.MyPubs[it.FromPub] && it.FromSess == c.SessTag {
+		if it.Seq <= read.Seq || c.own(it) {
 			continue
 		}
 		switch it.Type {
@@ -246,7 +247,7 @@ func (c *Ctx) humanLine(peers []Peer, online bool) string {
 	if n := len(c.openQuestions()); n > 0 {
 		open = fmt.Sprintf(" %d teammate question(s) wait for a human decision (/crew:board).", n)
 	}
-	if !c.Named {
+	if !c.Named && len(peers) > 0 {
 		open += fmt.Sprintf(" Your git name doesn't tell you apart, so you show as %q: /crew:name <your name> fixes it.", c.Name)
 	}
 	if !online {
